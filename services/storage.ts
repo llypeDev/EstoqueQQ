@@ -1,8 +1,9 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { Product, Movement, SupabaseConfig } from '../types';
+import { Product, Movement, SupabaseConfig, Order } from '../types';
 
 const LS_PRODUCTS = 'stock_products';
 const LS_MOVEMENTS = 'stock_movements';
+const LS_ORDERS = 'stock_orders';
 const LS_CONFIG_URL = 'qq_sb_url';
 const LS_CONFIG_KEY = 'qq_sb_key';
 
@@ -187,4 +188,71 @@ export const deleteAllMovements = async (): Promise<void> => {
     }
     // Limpa local também
     clearLocalHistory();
+};
+
+// --- ORDER METHODS ---
+
+export const fetchOrders = async (): Promise<Order[]> => {
+  if (supabase) {
+    const { data, error } = await supabase.from('orders').select('*').order('date', { ascending: false });
+    if (!error && data) {
+      return data.map((o: any) => ({
+        id: o.id,
+        orderNumber: o.order_number,
+        customerName: o.customer_name,
+        matricula: o.matricula,
+        date: o.date,
+        status: o.status,
+        items: o.items || [], // JSON column
+        obs: o.obs
+      }));
+    }
+  }
+  const local = localStorage.getItem(LS_ORDERS);
+  return local ? JSON.parse(local) : [];
+};
+
+export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => {
+  if (supabase) {
+    const payload = {
+      order_number: order.orderNumber,
+      customer_name: order.customerName,
+      matricula: order.matricula,
+      date: order.date,
+      status: order.status,
+      items: order.items,
+      obs: order.obs
+    };
+
+    if (isNew) {
+      // Supabase gera ID automaticamente se for UUID, mas se quisermos controlar:
+      // Vamos deixar o supabase gerar o ID se a coluna for uuid default gen
+      // Se a tabela não existir, vai cair no catch do App
+      const { error } = await supabase.from('orders').insert([{ ...payload, id: order.id }]);
+      if (error) throw new Error(error.message);
+    } else {
+      const { error } = await supabase.from('orders').update(payload).eq('id', order.id);
+      if (error) throw new Error(error.message);
+    }
+  } else {
+    const orders = await fetchOrders();
+    let newOrders = [...orders];
+    if (isNew) {
+      newOrders.unshift(order);
+    } else {
+      newOrders = orders.map(o => o.id === order.id ? order : o);
+    }
+    localStorage.setItem(LS_ORDERS, JSON.stringify(newOrders));
+  }
+};
+
+export const deleteOrder = async (id: string): Promise<void> => {
+    if (supabase) {
+        const { error } = await supabase.from('orders').delete().eq('id', id);
+        if (error) throw new Error(error.message);
+    } else {
+        const orders = await fetchOrders();
+        const newOrders = orders.filter(o => o.id !== id);
+        localStorage.setItem(LS_ORDERS, JSON.stringify(newOrders));
+    }
 };

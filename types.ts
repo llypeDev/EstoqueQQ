@@ -14,12 +14,30 @@ export interface Movement {
   matricula?: string;
 }
 
+export interface OrderItem {
+  productId: string;
+  productName: string;
+  qtyRequested: number;
+  qtyPicked: number; // Quantidade já baixada/separada
+}
+
+export interface Order {
+  id: string; // UUID or timestamp based
+  orderNumber: string;
+  customerName: string;
+  matricula: string;
+  date: string; // Data da compra
+  status: 'pending' | 'completed';
+  items: OrderItem[];
+  obs?: string;
+}
+
 export interface SupabaseConfig {
   url: string;
   key: string;
 }
 
-export type ViewState = 'home' | 'scan' | 'history';
+export type ViewState = 'home' | 'scan' | 'history' | 'orders';
 
 export interface ToastMessage {
   id: number;

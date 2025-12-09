@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Package, QrCode, ClipboardList, Plus, Search, Settings, 
   Database, Wifi, WifiOff, AlertTriangle, FileText, ArrowRight, Minus, 
-  Trash2, Box, History, ArrowDown, ArrowUp, Calendar
+  Trash2, Box, History, ArrowDown, ArrowUp, Calendar, ShoppingCart, 
+  User, Hash, CheckSquare, Edit, X, RefreshCw, ScanLine, Upload
 } from 'lucide-react';
-import { Product, Movement, ViewState, ToastMessage } from './types';
+import { Product, Movement, ViewState, ToastMessage, Order, OrderItem } from './types';
 import * as storage from './services/storage';
 import * as exporter from './utils/export';
 import Scanner from './components/Scanner';
@@ -16,6 +17,7 @@ const App: React.FC = () => {
   const [view, setView] = useState<ViewState>('home');
   const [products, setProducts] = useState<Product[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
+  const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(false);
   const [search, setSearch] = useState('');
@@ -30,16 +32,40 @@ const App: React.FC = () => {
   const [showAddProduct, setShowAddProduct] = useState(false);
   const [showBaixa, setShowBaixa] = useState(false);
   const [showExport, setShowExport] = useState(false);
+  const [showImport, setShowImport] = useState(false); // New Import Modal
   const [showScanner, setShowScanner] = useState(false);
+  const [scanMode, setScanMode] = useState<'global' | 'order'>('global');
+  
+  // Order Modals
+  const [showOrderForm, setShowOrderForm] = useState(false);
+  const [showOrderPicking, setShowOrderPicking] = useState(false);
+
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [viewQRProduct, setViewQRProduct] = useState<Product | null>(null);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
   // Form States
   const [configForm, setConfigForm] = useState(storage.getSupabaseConfig());
   const [newProdForm, setNewProdForm] = useState({ id: '', name: '', qty: '' });
-  // Adicionado matricula no estado do formulário de movimentação e estado para o tipo de transação
   const [baixaForm, setBaixaForm] = useState({ qty: 1, obs: '', matricula: '' });
   const [transactionType, setTransactionType] = useState<'in' | 'out'>('out');
+
+  // File Input Ref
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Order Form State
+  const emptyOrderForm: Order = {
+      id: '',
+      orderNumber: '',
+      customerName: '',
+      matricula: '',
+      date: new Date().toISOString().slice(0, 10),
+      status: 'pending',
+      items: [],
+      obs: ''
+  };
+  const [orderForm, setOrderForm] = useState<Order>(emptyOrderForm);
+  const [orderItemSearch, setOrderItemSearch] = useState('');
 
   // --- HELPERS ---
   const addToast = (type: ToastMessage['type'], text: string) => {
@@ -57,8 +83,10 @@ const App: React.FC = () => {
     try {
       const prods = await storage.fetchProducts();
       const movs = await storage.fetchMovements();
+      const ords = await storage.fetchOrders();
       setProducts(prods);
       setMovements(movs);
+      setOrders(ords);
     } catch (e) {
       console.error(e);
       addToast('error', 'Erro ao carregar dados.');
@@ -139,11 +167,9 @@ const App: React.FC = () => {
     if (!selectedProduct) return;
     
     const qtyInput = baixaForm.qty;
-    // Se for saída ('out'), subtrai (negativo). Se for entrada ('in'), soma (positivo).
     const isRemoval = transactionType === 'out';
     const finalQtyDelta = isRemoval ? -qtyInput : qtyInput;
     
-    // Validação apenas se for saída
     if (isRemoval && selectedProduct.qty < qtyInput) {
       addToast('error', 'Estoque insuficiente.');
       return;
@@ -161,7 +187,7 @@ const App: React.FC = () => {
       
       await storage.saveProduct(updatedProd, false);
       await storage.saveMovement({
-        id: Date.now(), // Ignored by Supabase, used for local
+        id: Date.now(),
         date: new Date().toISOString(),
         prodId: selectedProduct.id,
         prodName: selectedProduct.name,
@@ -173,7 +199,6 @@ const App: React.FC = () => {
       await refreshData();
       setShowBaixa(false);
       setSelectedProduct(null);
-      // Reset form but keep matricula as user might do multiple
       setBaixaForm(prev => ({ ...prev, qty: 1, obs: '' })); 
       addToast('success', 'Estoque atualizado!');
     } catch (e: any) {
@@ -183,32 +208,301 @@ const App: React.FC = () => {
     }
   };
 
+  // --- ORDER HANDLERS ---
+
+  const openNewOrder = () => {
+      setOrderForm({
+          ...emptyOrderForm,
+          id: crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(),
+      });
+      setShowOrderForm(true);
+  };
+
+  const openEditOrder = (order: Order) => {
+      setOrderForm({ ...order });
+      setShowOrderForm(true);
+  };
+
+  const openPicking = (order: Order) => {
+      setSelectedOrder(order);
+      setShowOrderPicking(true);
+  };
+
+  const handleSaveOrder = async () => {
+      if (!orderForm.orderNumber || !orderForm.customerName) {
+          addToast('error', 'Preencha Número e Nome.');
+          return;
+      }
+      if (orderForm.items.length === 0) {
+          addToast('error', 'Adicione pelo menos um item.');
+          return;
+      }
+
+      setIsLoading(true);
+      try {
+          // Check if editing or new
+          const isNew = !orders.find(o => o.id === orderForm.id);
+          
+          // Se todos os itens já foram separados, marca como completo
+          const allPicked = orderForm.items.every(i => i.qtyPicked >= i.qtyRequested);
+          const status = allPicked ? 'completed' : 'pending';
+          
+          await storage.saveOrder({ ...orderForm, status }, isNew);
+          await refreshData();
+          setShowOrderForm(false);
+          addToast('success', 'Pedido salvo!');
+      } catch (e: any) {
+          addToast('error', 'Erro ao salvar pedido: ' + e.message);
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
+  const handleDeleteOrder = async (id: string) => {
+      if(!window.confirm('Tem certeza que deseja excluir este pedido?')) return;
+      setIsLoading(true);
+      try {
+          await storage.deleteOrder(id);
+          await refreshData();
+          addToast('success', 'Pedido excluído.');
+      } catch (e: any) {
+          addToast('error', e.message);
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
+  const addProductToOrder = (product: Product) => {
+      const existing = orderForm.items.find(i => i.productId === product.id);
+      if (existing) {
+          // Increment
+          const updatedItems = orderForm.items.map(i => 
+              i.productId === product.id 
+              ? { ...i, qtyRequested: i.qtyRequested + 1 }
+              : i
+          );
+          setOrderForm({ ...orderForm, items: updatedItems });
+      } else {
+          // Add new
+          const newItem: OrderItem = {
+              productId: product.id,
+              productName: product.name,
+              qtyRequested: 1,
+              qtyPicked: 0
+          };
+          setOrderForm({ ...orderForm, items: [...orderForm.items, newItem] });
+      }
+      addToast('success', 'Item adicionado.');
+  };
+
+  const updateOrderItemQty = (prodId: string, newQty: number) => {
+      if (newQty <= 0) {
+          setOrderForm({ ...orderForm, items: orderForm.items.filter(i => i.productId !== prodId) });
+      } else {
+          setOrderForm({
+              ...orderForm,
+              items: orderForm.items.map(i => i.productId === prodId ? { ...i, qtyRequested: newQty } : i)
+          });
+      }
+  };
+
+  const handlePickItem = async (item: OrderItem, silent: boolean = false) => {
+      if (!selectedOrder) return;
+      if (item.qtyPicked >= item.qtyRequested) {
+          if(!silent) addToast('info', 'Item já separado totalmente.');
+          return;
+      }
+
+      // Verify Stock
+      const productInStock = products.find(p => p.id === item.productId);
+      if (!productInStock) {
+          addToast('error', 'Produto não encontrado no estoque.');
+          return;
+      }
+      if (productInStock.qty <= 0) {
+          addToast('error', 'Produto sem estoque!');
+          return;
+      }
+
+      if(!silent && !window.confirm(`Confirmar baixa de 1x ${item.productName}? Isso descontará do estoque.`)) return;
+
+      setIsLoading(true);
+      try {
+          // 1. Update Product Stock
+          const newQty = productInStock.qty - 1;
+          await storage.saveProduct({ ...productInStock, qty: newQty }, false);
+
+          // 2. Create Movement
+          await storage.saveMovement({
+              id: Date.now(),
+              date: new Date().toISOString(),
+              prodId: item.productId,
+              prodName: item.productName,
+              qty: -1,
+              obs: `Separação Pedido #${selectedOrder.orderNumber}`,
+              matricula: selectedOrder.matricula
+          });
+
+          // 3. Update Order Item
+          const updatedItems = selectedOrder.items.map(i => 
+              i.productId === item.productId 
+              ? { ...i, qtyPicked: i.qtyPicked + 1 } 
+              : i
+          );
+          
+          // Check completion
+          const allPicked = updatedItems.every(i => i.qtyPicked >= i.qtyRequested);
+          const updatedOrder: Order = { 
+              ...selectedOrder, 
+              items: updatedItems,
+              status: allPicked ? 'completed' : 'pending' 
+          };
+
+          await storage.saveOrder(updatedOrder, false);
+          
+          // Update Local State
+          setSelectedOrder(updatedOrder);
+          
+          await refreshData(); // Refresh global data to update stock counts everywhere
+          addToast('success', `Item ${item.productName} baixado.`);
+
+      } catch (e: any) {
+          addToast('error', 'Erro na baixa: ' + e.message);
+      } finally {
+          setIsLoading(false);
+      }
+  };
+
+  // --- IMPORT HANDLER ---
+
+  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+          try {
+              const text = event.target?.result as string;
+              if(!text) return;
+
+              setIsLoading(true);
+              const lines = text.split('\n');
+              const newOrdersMap = new Map<string, Order>();
+
+              // Ignora cabeçalho
+              const startIdx = lines[0].toLowerCase().includes('numero') ? 1 : 0;
+
+              for(let i = startIdx; i < lines.length; i++) {
+                  const line = lines[i].trim();
+                  if(!line) continue;
+
+                  const [num, client, mat, dateStr, prodCode, qtyStr] = line.split(';');
+                  
+                  if(!num || !prodCode) continue;
+
+                  const qty = parseInt(qtyStr) || 1;
+                  
+                  // Find Product
+                  const prod = products.find(p => p.id === prodCode);
+                  const prodName = prod ? prod.name : `Produto ${prodCode}`;
+
+                  // Check if we already started building this order in this loop
+                  if(!newOrdersMap.has(num)) {
+                      newOrdersMap.set(num, {
+                          id: crypto.randomUUID ? crypto.randomUUID() : `IMP-${Date.now()}-${i}`,
+                          orderNumber: num,
+                          customerName: client || 'Importado',
+                          matricula: mat || '',
+                          date: dateStr || new Date().toISOString().slice(0,10),
+                          status: 'pending',
+                          items: [],
+                          obs: 'Importado via CSV'
+                      });
+                  }
+
+                  const order = newOrdersMap.get(num)!;
+                  
+                  // Check if item exists in order to aggregate
+                  const existingItem = order.items.find(it => it.productId === prodCode);
+                  if(existingItem) {
+                      existingItem.qtyRequested += qty;
+                  } else {
+                      order.items.push({
+                          productId: prodCode,
+                          productName: prodName,
+                          qtyRequested: qty,
+                          qtyPicked: 0
+                      });
+                  }
+              }
+
+              // Save all orders
+              for (const order of newOrdersMap.values()) {
+                  await storage.saveOrder(order, true);
+              }
+
+              await refreshData();
+              addToast('success', `${newOrdersMap.size} pedidos importados!`);
+              setShowImport(false);
+          } catch (err: any) {
+              console.error(err);
+              addToast('error', 'Erro ao importar CSV.');
+          } finally {
+              setIsLoading(false);
+              // Clear input
+              if(fileInputRef.current) fileInputRef.current.value = '';
+          }
+      };
+      reader.readAsText(file);
+  };
+
+  // --- GENERAL HANDLERS ---
+
   const handleScan = (code: string) => {
     setShowScanner(false);
-    const prod = products.find(p => p.id === code);
-    if (prod) {
-      setSelectedProduct(prod);
-      setTransactionType('out'); // Default to removal on scan, can be changed
-      setBaixaForm(prev => ({ ...prev, qty: 1, obs: '' }));
-      setShowBaixa(true);
-    } else {
-        // If product doesn't exist, prompt to add it
-        if(window.confirm(`Produto ${code} não encontrado. Deseja cadastrar?`)) {
-            setNewProdForm({ id: code, name: '', qty: '' });
-            setShowAddProduct(true);
+
+    if (scanMode === 'global') {
+        // Global Mode (Check Stock / Transaction)
+        const prod = products.find(p => p.id === code);
+        if (prod) {
+          setSelectedProduct(prod);
+          setTransactionType('out'); 
+          setBaixaForm(prev => ({ ...prev, qty: 1, obs: '' }));
+          setShowBaixa(true);
+        } else {
+            if(window.confirm(`Produto ${code} não encontrado. Deseja cadastrar?`)) {
+                setNewProdForm({ id: code, name: '', qty: '' });
+                setShowAddProduct(true);
+            }
         }
+    } else if (scanMode === 'order' && selectedOrder) {
+        // Order Picking Mode
+        const item = selectedOrder.items.find(i => i.productId === code);
+        
+        if (item) {
+            handlePickItem(item, true); // Silent = true (skip confirm)
+        } else {
+            addToast('error', 'Este produto não pertence a este pedido.');
+        }
+        
+        // Reset mode after scan
+        setScanMode('global');
     }
   };
 
+  const openOrderScanner = () => {
+      setScanMode('order');
+      setShowScanner(true);
+  };
+
   const handleManualCodeCheck = () => {
-    // Re-using the manual input form from scanner page
     const code = (document.getElementById('manual-code-input') as HTMLInputElement)?.value;
     if(code) handleScan(code);
   };
 
   const openTransactionModal = (product: Product) => {
       setSelectedProduct(product);
-      setTransactionType('out'); // Default
+      setTransactionType('out');
       setBaixaForm({ qty: 1, obs: '', matricula: '' });
       setShowBaixa(true);
   };
@@ -222,31 +516,29 @@ const App: React.FC = () => {
   const filteredHistory = movements.filter(m => {
       if (!startDate && !endDate) return true;
       const mDate = new Date(m.date);
-      // Normalizar para ignorar horas na comparação
       mDate.setHours(0,0,0,0);
-      
       let startValid = true;
       let endValid = true;
-
       if (startDate) {
           const sDate = new Date(startDate);
           sDate.setHours(0,0,0,0);
-          // Adicionamos timezone offset fix se necessário, mas para YYYY-MM-DD input direto costuma funcionar
-          // Aqui usamos o objeto Date local do navegador
           startValid = mDate.getTime() >= sDate.getTime();
       }
-
       if (endDate) {
           const eDate = new Date(endDate);
           eDate.setHours(0,0,0,0);
           endValid = mDate.getTime() <= eDate.getTime();
       }
-
       return startValid && endValid;
   });
 
+  const filteredOrderProducts = products.filter(p => 
+    p.name.toLowerCase().includes(orderItemSearch.toLowerCase()) || 
+    p.id.toLowerCase().includes(orderItemSearch.toLowerCase())
+  );
+
   return (
-    <div className="max-w-[480px] mx-auto bg-slate-50 min-h-screen relative shadow-2xl pb-20">
+    <div className="max-w-[480px] mx-auto bg-slate-50 min-h-screen relative shadow-2xl pb-24">
       <Toast toasts={toasts} removeToast={removeToast} />
 
       {/* --- HEADER --- */}
@@ -264,8 +556,16 @@ const App: React.FC = () => {
             </div>
         </div>
         <div className="flex gap-2">
+            <button onClick={refreshData} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
+                <RefreshCw size={18} className={isLoading ? "animate-spin" : ""} />
+            </button>
+            {/* Export Button (History/Reports) - Now with FileText icon and before Import */}
             <button onClick={() => setShowExport(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
                 <FileText size={18} />
+            </button>
+            {/* Import Button - Now next to History/Export */}
+            <button onClick={() => setShowImport(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
+                <Upload size={18} />
             </button>
             <button onClick={() => setShowSettings(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
                 <Settings size={18} />
@@ -339,13 +639,79 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* --- VIEW: ORDERS --- */}
+      {view === 'orders' && (
+          <div className="p-6 animate-fade-in space-y-6">
+              <div className="flex justify-between items-end">
+                  <h2 className="text-2xl font-bold text-slate-800">Pedidos</h2>
+                  <button onClick={openNewOrder} className="bg-qq-green hover:bg-qq-green-dark text-white px-4 py-2 rounded-xl text-sm font-bold shadow-md shadow-green-100 transition flex items-center gap-2 active:scale-95">
+                      <Plus size={18} /> Criar Pedido
+                  </button>
+              </div>
+
+              <div className="space-y-4">
+                  {orders.length === 0 ? (
+                      <div className="text-center py-12 opacity-50">
+                          <ShoppingCart size={48} className="mx-auto mb-3 text-slate-400" />
+                          <p>Nenhum pedido cadastrado</p>
+                      </div>
+                  ) : (
+                      orders.map(order => {
+                          const totalItems = order.items.reduce((acc, i) => acc + i.qtyRequested, 0);
+                          const pickedItems = order.items.reduce((acc, i) => acc + i.qtyPicked, 0);
+                          const progress = totalItems > 0 ? (pickedItems / totalItems) * 100 : 0;
+
+                          return (
+                              <div key={order.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.99] transition-transform">
+                                  <div className="flex justify-between items-start mb-2">
+                                      <div>
+                                          <div className="flex items-center gap-2">
+                                            <h3 className="font-bold text-slate-800">#{order.orderNumber}</h3>
+                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${order.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
+                                                {order.status === 'completed' ? 'Concluído' : 'Pendente'}
+                                            </span>
+                                          </div>
+                                          <p className="text-sm font-medium text-slate-600">{order.customerName}</p>
+                                          <p className="text-xs text-slate-400 mt-1">{new Date(order.date).toLocaleDateString('pt-BR')} • Mat: {order.matricula}</p>
+                                      </div>
+                                      <div className="flex gap-2">
+                                          <button onClick={() => openEditOrder(order)} className="p-2 text-slate-400 hover:text-qq-green hover:bg-green-50 rounded-lg transition">
+                                              <Edit size={18} />
+                                          </button>
+                                          <button onClick={() => handleDeleteOrder(order.id)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition">
+                                              <Trash2 size={18} />
+                                          </button>
+                                      </div>
+                                  </div>
+                                  
+                                  {/* Progress Bar */}
+                                  <div onClick={() => openPicking(order)} className="mt-3 cursor-pointer group">
+                                      <div className="flex justify-between text-xs font-bold text-slate-500 mb-1 group-hover:text-qq-green transition-colors">
+                                          <span>Separação</span>
+                                          <span>{pickedItems}/{totalItems} itens</span>
+                                      </div>
+                                      <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
+                                          <div 
+                                              className={`h-full transition-all duration-500 ${progress === 100 ? 'bg-qq-green' : 'bg-qq-yellow'}`} 
+                                              style={{ width: `${progress}%` }}
+                                          ></div>
+                                      </div>
+                                  </div>
+                              </div>
+                          );
+                      })
+                  )}
+              </div>
+          </div>
+      )}
+
       {/* --- VIEW: SCAN --- */}
       {view === 'scan' && (
         <div className="p-6 animate-fade-in flex flex-col h-[80vh]">
             <h2 className="text-2xl font-bold text-slate-800 text-center mb-6">Ler Código</h2>
             
             <div 
-                onClick={() => setShowScanner(true)}
+                onClick={() => { setScanMode('global'); setShowScanner(true); }}
                 className="flex-1 bg-slate-800 rounded-3xl flex flex-col items-center justify-center text-white/50 cursor-pointer hover:bg-slate-700 transition-colors shadow-inner relative overflow-hidden group"
             >
                 <div className="absolute inset-0 bg-gradient-to-tr from-slate-900 to-transparent opacity-50"></div>
@@ -452,8 +818,13 @@ const App: React.FC = () => {
             <span className="text-[10px] font-bold mt-1">Estoque</span>
         </button>
         
+        <button onClick={() => setView('orders')} className={`flex flex-col items-center p-2 transition-colors ${view === 'orders' ? 'text-qq-green' : 'text-slate-400 hover:text-slate-600'}`}>
+            <ShoppingCart size={24} className={view === 'orders' ? 'fill-current opacity-20' : ''} />
+            <span className="text-[10px] font-bold mt-1">Pedidos</span>
+        </button>
+
         <div className="relative -top-6">
-            <button onClick={() => setView('scan')} className="w-16 h-16 rounded-full bg-gradient-to-br from-qq-yellow to-qq-yellow-dark text-white flex items-center justify-center shadow-lg shadow-orange-200 border-4 border-slate-50 transform transition active:scale-90">
+            <button onClick={() => { setScanMode('global'); setView('scan'); }} className="w-16 h-16 rounded-full bg-gradient-to-br from-qq-yellow to-qq-yellow-dark text-white flex items-center justify-center shadow-lg shadow-orange-200 border-4 border-slate-50 transform transition active:scale-90">
                 <QrCode size={28} />
             </button>
         </div>
@@ -515,6 +886,191 @@ const App: React.FC = () => {
                 </div>
             </div>
         </div>
+      )}
+
+      {/* Create/Edit Order Modal */}
+      {showOrderForm && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl flex flex-col max-h-[90vh]">
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-xl font-bold text-slate-800">
+                        {orderForm.orderNumber ? 'Editar Pedido' : 'Novo Pedido'}
+                    </h3>
+                    <button onClick={() => setShowOrderForm(false)} className="text-slate-400 hover:text-slate-600"><X size={24}/></button>
+                  </div>
+                  
+                  <div className="overflow-y-auto flex-1 space-y-4 pr-1">
+                      {/* Headers */}
+                      <div className="space-y-3">
+                          <div className="flex gap-3">
+                              <div className="flex-1">
+                                  <label className="text-[10px] font-bold text-slate-500 uppercase">Nº Pedido</label>
+                                  <div className="flex items-center border-2 border-slate-200 rounded-xl p-2 mt-1 focus-within:border-qq-green">
+                                      <Hash size={16} className="text-slate-400 mr-2" />
+                                      <input type="text" value={orderForm.orderNumber} onChange={e => setOrderForm({...orderForm, orderNumber: e.target.value})} className="w-full outline-none text-sm font-bold" placeholder="001" />
+                                  </div>
+                              </div>
+                              <div className="flex-1">
+                                  <label className="text-[10px] font-bold text-slate-500 uppercase">Data</label>
+                                  <div className="flex items-center border-2 border-slate-200 rounded-xl p-2 mt-1 focus-within:border-qq-green">
+                                      <Calendar size={16} className="text-slate-400 mr-2" />
+                                      <input type="date" value={orderForm.date} onChange={e => setOrderForm({...orderForm, date: e.target.value})} className="w-full outline-none text-sm" />
+                                  </div>
+                              </div>
+                          </div>
+                          
+                          <div>
+                              <label className="text-[10px] font-bold text-slate-500 uppercase">Cliente / Destino</label>
+                              <div className="flex items-center border-2 border-slate-200 rounded-xl p-2 mt-1 focus-within:border-qq-green">
+                                  <User size={16} className="text-slate-400 mr-2" />
+                                  <input type="text" value={orderForm.customerName} onChange={e => setOrderForm({...orderForm, customerName: e.target.value})} className="w-full outline-none text-sm font-bold" placeholder="Nome..." />
+                              </div>
+                          </div>
+
+                          <div className="flex gap-3">
+                            <div className="flex-1">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase">Matrícula</label>
+                                <input type="text" value={orderForm.matricula} onChange={e => setOrderForm({...orderForm, matricula: e.target.value})} className="w-full border-2 border-slate-200 rounded-xl p-2 mt-1 text-sm outline-none focus:border-qq-green" placeholder="12345" />
+                            </div>
+                            <div className="flex-[2]">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase">Observações</label>
+                                <input type="text" value={orderForm.obs || ''} onChange={e => setOrderForm({...orderForm, obs: e.target.value})} className="w-full border-2 border-slate-200 rounded-xl p-2 mt-1 text-sm outline-none focus:border-qq-green" placeholder="Opcional..." />
+                            </div>
+                          </div>
+                      </div>
+
+                      <hr className="border-slate-100" />
+
+                      {/* Items */}
+                      <div>
+                          <h4 className="font-bold text-slate-700 mb-2">Itens do Pedido</h4>
+                          
+                          {/* Item Search */}
+                          <div className="relative mb-3">
+                             <Search size={16} className="absolute left-3 top-3 text-slate-400" />
+                             <input 
+                                type="text" 
+                                placeholder="Buscar produto para adicionar..." 
+                                value={orderItemSearch}
+                                onChange={e => setOrderItemSearch(e.target.value)}
+                                className="w-full pl-9 p-2.5 bg-slate-50 rounded-xl text-sm border border-slate-200 outline-none focus:border-qq-green"
+                             />
+                             {orderItemSearch && (
+                                 <div className="absolute top-full left-0 right-0 bg-white shadow-xl border border-slate-100 rounded-xl mt-1 z-10 max-h-40 overflow-y-auto">
+                                     {filteredOrderProducts.map(p => (
+                                         <div key={p.id} onClick={() => { addProductToOrder(p); setOrderItemSearch(''); }} className="p-2 hover:bg-slate-50 cursor-pointer flex justify-between items-center border-b border-slate-50 last:border-0">
+                                             <span className="text-sm font-medium truncate flex-1">{p.name}</span>
+                                             <span className="text-xs bg-slate-100 px-1.5 rounded ml-2">Est: {p.qty}</span>
+                                         </div>
+                                     ))}
+                                 </div>
+                             )}
+                          </div>
+
+                          {/* Items List */}
+                          <div className="space-y-2">
+                              {orderForm.items.length === 0 ? (
+                                  <p className="text-center text-xs text-slate-400 py-4 italic">Nenhum item adicionado</p>
+                              ) : (
+                                  orderForm.items.map(item => (
+                                      <div key={item.productId} className="flex justify-between items-center bg-slate-50 p-2.5 rounded-xl border border-slate-100">
+                                          <div className="flex-1 min-w-0 pr-2">
+                                              <p className="text-sm font-bold text-slate-700 truncate">{item.productName}</p>
+                                          </div>
+                                          <div className="flex items-center gap-2">
+                                              <button onClick={() => updateOrderItemQty(item.productId, item.qtyRequested - 1)} className="w-6 h-6 flex items-center justify-center bg-white border border-slate-200 rounded hover:bg-red-50 hover:text-red-500">
+                                                <Minus size={12} />
+                                              </button>
+                                              <span className="text-sm font-bold w-6 text-center">{item.qtyRequested}</span>
+                                              <button onClick={() => updateOrderItemQty(item.productId, item.qtyRequested + 1)} className="w-6 h-6 flex items-center justify-center bg-white border border-slate-200 rounded hover:bg-green-50 hover:text-green-600">
+                                                <Plus size={12} />
+                                              </button>
+                                          </div>
+                                      </div>
+                                  ))
+                              )}
+                          </div>
+                      </div>
+                  </div>
+
+                  <div className="pt-4 mt-2 border-t border-slate-100">
+                      <button onClick={handleSaveOrder} className="w-full bg-qq-green hover:bg-qq-green-dark text-white py-3 rounded-xl font-bold shadow-lg shadow-green-100 transition active:scale-95">
+                          Salvar Pedido
+                      </button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Picking Modal */}
+      {showOrderPicking && selectedOrder && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+              <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl flex flex-col max-h-[90vh]">
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                        <h3 className="text-xl font-bold text-slate-800">Separação #{selectedOrder.orderNumber}</h3>
+                        <p className="text-sm text-slate-500">{selectedOrder.customerName}</p>
+                    </div>
+                    <button onClick={() => setShowOrderPicking(false)} className="bg-slate-100 p-2 rounded-full text-slate-500"><X size={20}/></button>
+                  </div>
+
+                  <div className="bg-blue-50 p-3 rounded-xl border border-blue-100 mb-4 text-xs text-blue-800 flex justify-between items-center">
+                      <div>
+                        <p className="font-bold flex items-center gap-1"><AlertTriangle size={12}/> Modo Separação:</p>
+                        <p>Toque para baixar ou use a câmera.</p>
+                      </div>
+                      <button 
+                        onClick={openOrderScanner}
+                        className="bg-blue-600 text-white p-2.5 rounded-xl shadow-lg shadow-blue-200 active:scale-95 transition-transform"
+                      >
+                          <ScanLine size={20} />
+                      </button>
+                  </div>
+
+                  <div className="overflow-y-auto flex-1 space-y-3">
+                      {selectedOrder.items.map(item => {
+                          const isFullyPicked = item.qtyPicked >= item.qtyRequested;
+                          const currentStock = products.find(p => p.id === item.productId)?.qty || 0;
+
+                          return (
+                              <div 
+                                key={item.productId} 
+                                onClick={() => !isFullyPicked && handlePickItem(item)}
+                                className={`p-3 rounded-xl border transition-all ${
+                                    isFullyPicked 
+                                    ? 'bg-green-50 border-green-200 opacity-60' 
+                                    : 'bg-white border-slate-200 shadow-sm active:scale-[0.98] cursor-pointer hover:border-qq-green'
+                                }`}
+                              >
+                                  <div className="flex justify-between items-center mb-1">
+                                      <p className={`font-bold ${isFullyPicked ? 'text-green-800' : 'text-slate-800'}`}>{item.productName}</p>
+                                      {isFullyPicked && <CheckSquare size={18} className="text-green-600" />}
+                                  </div>
+                                  <div className="flex justify-between items-center text-sm">
+                                      <div className="flex items-center gap-2">
+                                          <span className="text-slate-500">Separado:</span>
+                                          <span className={`font-mono font-bold ${isFullyPicked ? 'text-green-700' : 'text-slate-800'}`}>
+                                              {item.qtyPicked} / {item.qtyRequested}
+                                          </span>
+                                      </div>
+                                      {!isFullyPicked && (
+                                          <span className={`text-xs px-2 py-0.5 rounded ${currentStock > 0 ? 'bg-slate-100 text-slate-600' : 'bg-red-100 text-red-600 font-bold'}`}>
+                                              Estoque: {currentStock}
+                                          </span>
+                                      )}
+                                  </div>
+                              </div>
+                          );
+                      })}
+                  </div>
+
+                  {selectedOrder.status === 'completed' && (
+                      <div className="mt-4 p-3 bg-green-100 text-green-800 text-center rounded-xl font-bold border border-green-200">
+                          Pedido Finalizado
+                      </div>
+                  )}
+              </div>
+          </div>
       )}
 
       {/* Transaction Modal (formerly Baixa) */}
@@ -604,6 +1160,46 @@ const App: React.FC = () => {
                     </button>
                 </div>
                 <button onClick={() => setShowExport(false)} className="w-full mt-6 bg-slate-100 py-3 rounded-xl font-bold text-slate-600">Fechar</button>
+            </div>
+        </div>
+      )}
+
+      {/* Import Modal */}
+      {showImport && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
+            <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
+                <h3 className="text-xl font-bold text-slate-800 mb-4 text-center">Importar Pedidos</h3>
+                
+                <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs text-slate-600 mb-6">
+                    <p className="font-bold mb-2">Formato do CSV (separado por ;):</p>
+                    <code className="block bg-white p-2 rounded border border-slate-200 text-slate-500 mb-2 overflow-x-auto whitespace-nowrap">
+                        NumeroPedido;Cliente;Matricula;Data;CodProduto;Qtd
+                    </code>
+                    <p>Exemplo:</p>
+                    <code className="block bg-white p-2 rounded border border-slate-200 text-slate-500 overflow-x-auto whitespace-nowrap">
+                        101;João Silva;1234;2023-10-25;789101;2
+                    </code>
+                </div>
+
+                <div className="space-y-4">
+                    <input 
+                        type="file" 
+                        accept=".csv"
+                        ref={fileInputRef}
+                        onChange={handleImportCSV}
+                        className="hidden"
+                        id="csv-upload"
+                    />
+                    <label 
+                        htmlFor="csv-upload"
+                        className="w-full flex flex-col items-center justify-center p-6 border-2 border-dashed border-slate-300 rounded-xl cursor-pointer hover:border-qq-green hover:bg-green-50/50 transition-colors"
+                    >
+                        <Upload size={32} className="text-slate-400 mb-2" />
+                        <span className="text-sm font-bold text-slate-600">Toque para selecionar arquivo</span>
+                    </label>
+                </div>
+
+                <button onClick={() => setShowImport(false)} className="w-full mt-6 bg-slate-100 py-3 rounded-xl font-bold text-slate-600">Cancelar</button>
             </div>
         </div>
       )}
