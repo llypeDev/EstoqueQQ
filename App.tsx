@@ -559,13 +559,9 @@ const App: React.FC = () => {
             <button onClick={refreshData} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
                 <RefreshCw size={18} className={isLoading ? "animate-spin" : ""} />
             </button>
-            {/* Export Button (History/Reports) - Now with FileText icon and before Import */}
+            {/* Export Button (History/Reports) - Now with FileText icon */}
             <button onClick={() => setShowExport(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
                 <FileText size={18} />
-            </button>
-            {/* Import Button - Now next to History/Export */}
-            <button onClick={() => setShowImport(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
-                <Upload size={18} />
             </button>
             <button onClick={() => setShowSettings(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
                 <Settings size={18} />
@@ -832,6 +828,11 @@ const App: React.FC = () => {
         <button onClick={() => setView('history')} className={`flex flex-col items-center p-2 transition-colors ${view === 'history' ? 'text-qq-green' : 'text-slate-400 hover:text-slate-600'}`}>
             <ClipboardList size={24} className={view === 'history' ? 'fill-current opacity-20' : ''} />
             <span className="text-[10px] font-bold mt-1">Histórico</span>
+        </button>
+
+        <button onClick={() => setShowImport(true)} className="flex flex-col items-center p-2 transition-colors text-slate-400 hover:text-slate-600">
+            <Upload size={24} />
+            <span className="text-[10px] font-bold mt-1">Importar</span>
         </button>
       </nav>
 
