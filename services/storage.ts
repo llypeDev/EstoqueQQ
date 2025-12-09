@@ -53,7 +53,13 @@ export const clearSupabaseConfig = () => {
 export const fetchProducts = async (): Promise<Product[]> => {
   if (supabase) {
     const { data, error } = await supabase.from('products').select('*').order('name');
-    if (!error && data) return data;
+    if (!error && data) {
+        // Normaliza dados caso ID seja retornado como array (erro de schema)
+        return data.map((p: any) => ({
+            ...p,
+            id: Array.isArray(p.id) ? p.id[0] : p.id
+        }));
+    }
   }
   const local = localStorage.getItem(LS_PRODUCTS);
   return local ? JSON.parse(local) : [];
@@ -62,8 +68,16 @@ export const fetchProducts = async (): Promise<Product[]> => {
 export const saveProduct = async (product: Product, isNew: boolean): Promise<void> => {
   if (supabase) {
     if (isNew) {
-      const { error } = await supabase.from('products').insert([product]);
-      if (error) throw new Error(error.message);
+      let { error } = await supabase.from('products').insert([product]);
+      
+      // Tentativa de correção se 'id' for array
+      if (error && error.message && error.message.includes('malformed array literal')) {
+          const retryPayload = { ...product, id: [product.id] };
+          const retry = await supabase.from('products').insert([retryPayload]);
+          if (retry.error) throw new Error(retry.error.message);
+      } else if (error) {
+          throw new Error(error.message);
+      }
     } else {
       const { error } = await supabase.from('products').update({ qty: product.qty }).eq('id', product.id);
       if (error) throw new Error(error.message);
@@ -86,15 +100,33 @@ export const fetchMovements = async (): Promise<Movement[]> => {
   if (supabase) {
     const { data, error } = await supabase.from('movements').select('*').order('created_at', { ascending: false }).limit(50);
     if (!error && data) {
-      return data.map((m: any) => ({
-        id: m.id,
-        date: m.created_at,
-        prodId: m.prod_id,
-        prodName: m.prod_name,
-        qty: m.qty,
-        obs: m.obs,
-        matricula: m.matricula // Mapeando matricula da leitura
-      }));
+      return data.map((m: any) => {
+        // Tenta extrair a matrícula do campo obs caso a coluna não exista no banco
+        let matricula = m.matricula;
+        let obs = m.obs;
+
+        // Normaliza prod_id caso venha como array
+        const rawProdId = m.prod_id;
+        const prodId = Array.isArray(rawProdId) ? (rawProdId[0] || '') : rawProdId;
+
+        if (!matricula && obs && typeof obs === 'string' && obs.startsWith('[Mat:')) {
+            const match = obs.match(/^\[Mat: (.+?)\]\s*(.*)$/);
+            if (match) {
+                matricula = match[1];
+                obs = match[2];
+            }
+        }
+
+        return {
+          id: m.id,
+          date: m.created_at,
+          prodId: prodId,
+          prodName: m.prod_name,
+          qty: m.qty,
+          obs: obs,
+          matricula: matricula
+        };
+      });
     }
   }
   const local = localStorage.getItem(LS_MOVEMENTS);
@@ -103,15 +135,33 @@ export const fetchMovements = async (): Promise<Movement[]> => {
 
 export const saveMovement = async (movement: Movement): Promise<void> => {
   if (supabase) {
-    const { error } = await supabase.from('movements').insert([{
+    // Workaround: Como a coluna 'matricula' pode não existir no banco,
+    // salvamos dentro do campo 'obs' formatado.
+    const obsWithMatricula = movement.matricula 
+        ? `[Mat: ${movement.matricula}] ${movement.obs || ''}`.trim() 
+        : movement.obs;
+
+    const payload = {
       prod_id: movement.prodId,
       prod_name: movement.prodName,
       qty: movement.qty,
-      obs: movement.obs,
-      matricula: movement.matricula, // Enviando matricula para o Supabase
+      obs: obsWithMatricula,
       created_at: movement.date 
-    }]);
-    if (error) throw new Error(error.message);
+    };
+
+    let { error } = await supabase.from('movements').insert([payload]);
+
+    // Retry logic: Se o banco reclamar de "malformed array literal", 
+    // é provável que prod_id seja text[] (array). Tentamos enviar como array.
+    if (error && error.message && error.message.includes('malformed array literal')) {
+        console.warn("Retrying insert with array prod_id due to schema mismatch.");
+        const retryPayload = { ...payload, prod_id: [movement.prodId] };
+        const retry = await supabase.from('movements').insert([retryPayload]);
+        if (retry.error) throw new Error(retry.error.message);
+    } else if (error) {
+        throw new Error(error.message);
+    }
+
   } else {
     const movements = await fetchMovements();
     movements.unshift(movement);
