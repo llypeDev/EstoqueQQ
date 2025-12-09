@@ -256,7 +256,7 @@ const App: React.FC = () => {
                 <Box size={24} className="text-white" />
             </div>
             <div>
-                <h1 className="text-lg font-bold leading-tight">Estoque <span className="text-qq-yellow">QQ</span></h1>
+                <h1 className="text-lg font-bold leading-tight">Estoque <span className="text-qq-yellow">Palavra</span></h1>
                 <div className="flex items-center gap-1.5 opacity-80">
                     <div className={`w-2 h-2 rounded-full ${isOnline ? 'bg-green-400 shadow-[0_0_8px_rgba(74,222,128,0.8)]' : 'bg-slate-400'}`}></div>
                     <span className="text-[10px] font-medium tracking-wide uppercase">{isOnline ? 'Online' : 'Offline'}</span>
