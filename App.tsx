@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Package, QrCode, ClipboardList, Plus, Search, Settings, 
   Database, Wifi, WifiOff, AlertTriangle, FileText, ArrowRight, Minus, 
-  Trash2, Box, History, ArrowDown, ArrowUp
+  Trash2, Box, History, ArrowDown, ArrowUp, Calendar
 } from 'lucide-react';
 import { Product, Movement, ViewState, ToastMessage } from './types';
 import * as storage from './services/storage';
@@ -20,6 +20,10 @@ const App: React.FC = () => {
   const [isOnline, setIsOnline] = useState(false);
   const [search, setSearch] = useState('');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // Filter State
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
 
   // Modals State
   const [showSettings, setShowSettings] = useState(false);
@@ -88,6 +92,26 @@ const App: React.FC = () => {
     setShowSettings(false);
     addToast('info', 'Desconectado. Usando modo offline.');
     refreshData();
+  };
+
+  const handleClearHistory = async () => {
+      const message = isOnline 
+        ? 'ATENÇÃO: Isso apagará TODO o histórico no Banco de Dados. Tem certeza?' 
+        : 'Limpar histórico local?';
+      
+      if (window.confirm(message)) {
+          setIsLoading(true);
+          try {
+              await storage.deleteAllMovements();
+              await refreshData();
+              addToast('success', 'Histórico apagado com sucesso.');
+          } catch (e: any) {
+              console.error("Delete Error:", e);
+              addToast('error', 'Erro ao apagar: ' + e.message);
+          } finally {
+              setIsLoading(false);
+          }
+      }
   };
 
   const handleSaveProduct = async () => {
@@ -194,6 +218,32 @@ const App: React.FC = () => {
     p.name.toLowerCase().includes(search.toLowerCase()) || 
     p.id.toLowerCase().includes(search.toLowerCase())
   );
+
+  const filteredHistory = movements.filter(m => {
+      if (!startDate && !endDate) return true;
+      const mDate = new Date(m.date);
+      // Normalizar para ignorar horas na comparação
+      mDate.setHours(0,0,0,0);
+      
+      let startValid = true;
+      let endValid = true;
+
+      if (startDate) {
+          const sDate = new Date(startDate);
+          sDate.setHours(0,0,0,0);
+          // Adicionamos timezone offset fix se necessário, mas para YYYY-MM-DD input direto costuma funcionar
+          // Aqui usamos o objeto Date local do navegador
+          startValid = mDate.getTime() >= sDate.getTime();
+      }
+
+      if (endDate) {
+          const eDate = new Date(endDate);
+          eDate.setHours(0,0,0,0);
+          endValid = mDate.getTime() <= eDate.getTime();
+      }
+
+      return startValid && endValid;
+  });
 
   return (
     <div className="max-w-[480px] mx-auto bg-slate-50 min-h-screen relative shadow-2xl pb-20">
@@ -321,22 +371,50 @@ const App: React.FC = () => {
 
       {/* --- VIEW: HISTORY --- */}
       {view === 'history' && (
-        <div className="p-6 animate-fade-in space-y-6">
-            <div className="flex justify-between items-center">
+        <div className="p-6 animate-fade-in space-y-4">
+            <div className="flex justify-between items-center mb-2">
                 <h2 className="text-2xl font-bold text-slate-800">Histórico</h2>
-                <button onClick={() => { if(confirm('Limpar histórico local?')) { storage.clearLocalHistory(); refreshData(); } }} className="text-red-500 bg-red-50 hover:bg-red-100 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition">
-                    <Trash2 size={14} /> Limpar
+                <button 
+                    onClick={handleClearHistory} 
+                    className="text-white bg-red-500 hover:bg-red-600 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition shadow-sm shadow-red-200"
+                >
+                    <Trash2 size={14} /> Limpar Tudo
                 </button>
             </div>
 
-            <div className="space-y-4">
-                {movements.length === 0 ? (
+            {/* Filter Section */}
+            <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm grid grid-cols-2 gap-3">
+                <div className="col-span-2 text-xs font-bold text-slate-400 uppercase tracking-wide flex items-center gap-1">
+                    <Calendar size={12} /> Filtro por Data
+                </div>
+                <div>
+                    <label className="text-[10px] text-slate-500 font-bold block mb-1">De:</label>
+                    <input 
+                        type="date" 
+                        value={startDate} 
+                        onChange={e => setStartDate(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs focus:border-qq-green outline-none text-slate-700"
+                    />
+                </div>
+                <div>
+                    <label className="text-[10px] text-slate-500 font-bold block mb-1">Até:</label>
+                    <input 
+                        type="date" 
+                        value={endDate} 
+                        onChange={e => setEndDate(e.target.value)}
+                        className="w-full bg-slate-50 border border-slate-200 rounded-lg p-2 text-xs focus:border-qq-green outline-none text-slate-700"
+                    />
+                </div>
+            </div>
+
+            <div className="space-y-4 pt-2">
+                {filteredHistory.length === 0 ? (
                     <div className="text-center py-12 opacity-50">
                         <History size={48} className="mx-auto mb-3 text-slate-400" />
-                        <p>Sem movimentações recentes</p>
+                        <p>{movements.length > 0 ? 'Nenhum item neste período' : 'Sem movimentações recentes'}</p>
                     </div>
                 ) : (
-                    movements.map(m => (
+                    filteredHistory.map(m => (
                         <div key={m.id} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-start gap-4">
                             <div className={`mt-1 p-2 rounded-lg ${m.qty > 0 ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
                                 {m.qty > 0 ? <Plus size={16} /> : <Minus size={16} />}

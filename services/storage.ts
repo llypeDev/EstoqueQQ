@@ -98,7 +98,8 @@ export const saveProduct = async (product: Product, isNew: boolean): Promise<voi
 
 export const fetchMovements = async (): Promise<Movement[]> => {
   if (supabase) {
-    const { data, error } = await supabase.from('movements').select('*').order('created_at', { ascending: false }).limit(50);
+    // Aumentado limit para 200 para facilitar o filtro de datas
+    const { data, error } = await supabase.from('movements').select('*').order('created_at', { ascending: false }).limit(200);
     if (!error && data) {
       return data.map((m: any) => {
         // Tenta extrair a matrícula do campo obs caso a coluna não exista no banco
@@ -171,4 +172,19 @@ export const saveMovement = async (movement: Movement): Promise<void> => {
 
 export const clearLocalHistory = () => {
     localStorage.removeItem(LS_MOVEMENTS);
+};
+
+export const deleteAllMovements = async (): Promise<void> => {
+    if (supabase) {
+        // Usa filtro por data (created_at <= ano 3000) para garantir que funcione
+        // tanto com IDs numéricos quanto UUIDs, evitando erro de tipo.
+        const { error } = await supabase.from('movements').delete().lte('created_at', '3000-01-01');
+        
+        if (error) {
+            console.error("Supabase Delete Error:", error);
+            throw new Error(error.message);
+        }
+    }
+    // Limpa local também
+    clearLocalHistory();
 };
