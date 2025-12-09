@@ -11,6 +11,7 @@ export interface Movement {
   prodName: string;
   qty: number; // Negative for removal, positive for addition
   obs?: string;
+  matricula?: string;
 }
 
 export interface SupabaseConfig {

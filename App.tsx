@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Package, QrCode, ClipboardList, Plus, Search, Settings, 
   Database, Wifi, WifiOff, AlertTriangle, FileText, ArrowRight, Minus, 
-  Trash2, Box, History
+  Trash2, Box, History, ArrowDown, ArrowUp
 } from 'lucide-react';
 import { Product, Movement, ViewState, ToastMessage } from './types';
 import * as storage from './services/storage';
@@ -33,7 +33,9 @@ const App: React.FC = () => {
   // Form States
   const [configForm, setConfigForm] = useState(storage.getSupabaseConfig());
   const [newProdForm, setNewProdForm] = useState({ id: '', name: '', qty: '' });
-  const [baixaForm, setBaixaForm] = useState({ qty: 1, obs: '' });
+  // Adicionado matricula no estado do formulário de movimentação e estado para o tipo de transação
+  const [baixaForm, setBaixaForm] = useState({ qty: 1, obs: '', matricula: '' });
+  const [transactionType, setTransactionType] = useState<'in' | 'out'>('out');
 
   // --- HELPERS ---
   const addToast = (type: ToastMessage['type'], text: string) => {
@@ -109,23 +111,28 @@ const App: React.FC = () => {
     }
   };
 
-  const handleConfirmBaixa = async () => {
+  const handleConfirmTransaction = async () => {
     if (!selectedProduct) return;
-    const qtyChange = baixaForm.qty; // Assuming this represents REMOVAL if positive in UI context, but let's clarify logic
     
-    // In this app logic: "Baixa" means removing or updating stock. 
-    // Usually stock apps have add/remove. The original only had "adjust".
-    // Let's implement it as: Negative input adds stock? Or dedicated "Add/Remove"?
-    // The original UI implies stock adjustment. Let's assume the user enters how many to REMOVE.
+    const qtyInput = baixaForm.qty;
+    // Se for saída ('out'), subtrai (negativo). Se for entrada ('in'), soma (positivo).
+    const isRemoval = transactionType === 'out';
+    const finalQtyDelta = isRemoval ? -qtyInput : qtyInput;
     
-    if (selectedProduct.qty < qtyChange) {
+    // Validação apenas se for saída
+    if (isRemoval && selectedProduct.qty < qtyInput) {
       addToast('error', 'Estoque insuficiente.');
       return;
     }
 
+    if (!baixaForm.matricula.trim()) {
+        addToast('error', 'Preencha a matrícula.');
+        return;
+    }
+
     setIsLoading(true);
     try {
-      const newQty = selectedProduct.qty - qtyChange;
+      const newQty = selectedProduct.qty + finalQtyDelta;
       const updatedProd = { ...selectedProduct, qty: newQty };
       
       await storage.saveProduct(updatedProd, false);
@@ -134,14 +141,16 @@ const App: React.FC = () => {
         date: new Date().toISOString(),
         prodId: selectedProduct.id,
         prodName: selectedProduct.name,
-        qty: qtyChange, // Quantity removed
-        obs: baixaForm.obs
+        qty: finalQtyDelta, 
+        obs: baixaForm.obs,
+        matricula: baixaForm.matricula
       });
 
       await refreshData();
       setShowBaixa(false);
       setSelectedProduct(null);
-      setBaixaForm({ qty: 1, obs: '' });
+      // Reset form but keep matricula as user might do multiple
+      setBaixaForm(prev => ({ ...prev, qty: 1, obs: '' })); 
       addToast('success', 'Estoque atualizado!');
     } catch (e: any) {
       addToast('error', e.message);
@@ -155,6 +164,8 @@ const App: React.FC = () => {
     const prod = products.find(p => p.id === code);
     if (prod) {
       setSelectedProduct(prod);
+      setTransactionType('out'); // Default to removal on scan, can be changed
+      setBaixaForm(prev => ({ ...prev, qty: 1, obs: '' }));
       setShowBaixa(true);
     } else {
         // If product doesn't exist, prompt to add it
@@ -169,6 +180,13 @@ const App: React.FC = () => {
     // Re-using the manual input form from scanner page
     const code = (document.getElementById('manual-code-input') as HTMLInputElement)?.value;
     if(code) handleScan(code);
+  };
+
+  const openTransactionModal = (product: Product) => {
+      setSelectedProduct(product);
+      setTransactionType('out'); // Default
+      setBaixaForm({ qty: 1, obs: '', matricula: '' });
+      setShowBaixa(true);
   };
 
   // --- RENDER HELPERS ---
@@ -243,7 +261,7 @@ const App: React.FC = () => {
                     </div>
                 ) : (
                     filteredProducts.map(p => (
-                        <div key={p.id} onClick={() => { setSelectedProduct(p); setShowBaixa(true); }} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center active:scale-[0.98] transition-transform cursor-pointer">
+                        <div key={p.id} onClick={() => openTransactionModal(p)} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex justify-between items-center active:scale-[0.98] transition-transform cursor-pointer">
                             <div className="flex-1 min-w-0 pr-4">
                                 <h3 className="font-bold text-slate-800 truncate">{p.name}</h3>
                                 <div className="mt-1 inline-flex items-center px-2 py-0.5 rounded bg-slate-100 text-slate-500 text-xs font-mono">
@@ -320,17 +338,21 @@ const App: React.FC = () => {
                 ) : (
                     movements.map(m => (
                         <div key={m.id} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-start gap-4">
-                            <div className="mt-1 bg-yellow-50 text-yellow-700 p-2 rounded-lg">
-                                <Minus size={16} />
+                            <div className={`mt-1 p-2 rounded-lg ${m.qty > 0 ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
+                                {m.qty > 0 ? <Plus size={16} /> : <Minus size={16} />}
                             </div>
                             <div className="flex-1 min-w-0">
                                 <div className="flex justify-between items-start">
                                     <h4 className="font-bold text-slate-800 truncate">{m.prodName}</h4>
-                                    <span className="font-bold text-qq-yellow">-{m.qty}</span>
+                                    <span className={`font-bold ${m.qty > 0 ? 'text-green-600' : 'text-qq-yellow'}`}>
+                                        {m.qty > 0 ? `+${m.qty}` : m.qty}
+                                    </span>
                                 </div>
-                                <div className="text-xs text-slate-400 mt-1 flex justify-between">
+                                <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-2">
                                     <span>{new Date(m.date).toLocaleString('pt-BR')}</span>
-                                    <span className="font-mono">#{m.prodId}</span>
+                                    {m.matricula && (
+                                        <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600 font-medium">Mat: {m.matricula}</span>
+                                    )}
                                 </div>
                                 {m.obs && (
                                     <div className="mt-2 text-xs bg-slate-50 text-slate-600 p-2 rounded italic border border-slate-100">
@@ -417,39 +439,72 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Baixa Modal */}
+      {/* Transaction Modal (formerly Baixa) */}
       {showBaixa && selectedProduct && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
+                
+                {/* Switcher: Entrada / Saída */}
+                <div className="flex bg-slate-100 p-1 rounded-xl mb-6">
+                    <button 
+                        onClick={() => setTransactionType('out')}
+                        className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${transactionType === 'out' ? 'bg-white text-qq-yellow shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                        <ArrowDown size={16} /> Saída
+                    </button>
+                    <button 
+                        onClick={() => setTransactionType('in')}
+                        className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all flex items-center justify-center gap-2 ${transactionType === 'in' ? 'bg-white text-qq-green shadow-sm' : 'text-slate-400 hover:text-slate-600'}`}
+                    >
+                        <ArrowUp size={16} /> Entrada
+                    </button>
+                </div>
+
                 <div className="text-center mb-6">
                     <h3 className="text-2xl font-bold text-slate-800 leading-tight">{selectedProduct.name}</h3>
-                    <p className="text-slate-500 font-medium mt-1">Em estoque: <span className="text-qq-green font-bold">{selectedProduct.qty}</span></p>
+                    <p className="text-slate-500 font-medium mt-1">Em estoque: <span className="font-bold text-slate-800">{selectedProduct.qty}</span></p>
                 </div>
 
                 <div className="flex items-center justify-center gap-4 mb-6">
                     <button onClick={() => setBaixaForm({...baixaForm, qty: Math.max(1, baixaForm.qty - 1)})} className="w-12 h-12 rounded-full bg-slate-100 text-slate-800 font-bold text-xl hover:bg-slate-200 transition"><Minus size={20} className="mx-auto" /></button>
-                    <div className="w-24 h-16 border-2 border-slate-200 rounded-2xl flex items-center justify-center">
+                    <div className={`w-24 h-16 border-2 rounded-2xl flex items-center justify-center ${transactionType === 'in' ? 'border-green-100' : 'border-orange-100'}`}>
                         <input 
                             type="number" 
                             value={baixaForm.qty} 
                             onChange={e => setBaixaForm({...baixaForm, qty: parseInt(e.target.value) || 1})} 
-                            className="w-full text-center text-2xl font-bold text-qq-yellow outline-none bg-transparent"
+                            className={`w-full text-center text-2xl font-bold outline-none bg-transparent ${transactionType === 'in' ? 'text-qq-green' : 'text-qq-yellow'}`}
                         />
                     </div>
                     <button onClick={() => setBaixaForm({...baixaForm, qty: baixaForm.qty + 1})} className="w-12 h-12 rounded-full bg-slate-100 text-slate-800 font-bold text-xl hover:bg-slate-200 transition"><Plus size={20} className="mx-auto" /></button>
                 </div>
+                
+                <div className="space-y-3">
+                    {/* Campo de Matrícula (Acima da observação) */}
+                    <input 
+                        type="text"
+                        placeholder="Matrícula do Funcionário"
+                        value={baixaForm.matricula}
+                        onChange={e => setBaixaForm({...baixaForm, matricula: e.target.value})}
+                        className={`w-full border-2 rounded-xl p-3 text-sm outline-none ${transactionType === 'in' ? 'focus:border-qq-green border-slate-100' : 'focus:border-qq-yellow border-slate-100'}`}
+                    />
 
-                <textarea 
-                    placeholder="Observação (Opcional)" 
-                    value={baixaForm.obs}
-                    onChange={e => setBaixaForm({...baixaForm, obs: e.target.value})}
-                    rows={2}
-                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-xl p-3 text-sm focus:border-qq-yellow outline-none resize-none"
-                ></textarea>
+                    <textarea 
+                        placeholder="Observação (Opcional)" 
+                        value={baixaForm.obs}
+                        onChange={e => setBaixaForm({...baixaForm, obs: e.target.value})}
+                        rows={2}
+                        className={`w-full bg-slate-50 border-2 border-slate-100 rounded-xl p-3 text-sm outline-none resize-none ${transactionType === 'in' ? 'focus:border-qq-green' : 'focus:border-qq-yellow'}`}
+                    ></textarea>
+                </div>
 
                 <div className="flex gap-3 mt-6">
                     <button onClick={() => { setShowBaixa(false); setSelectedProduct(null); }} className="flex-1 bg-slate-100 text-slate-700 py-3 rounded-xl font-bold">Cancelar</button>
-                    <button onClick={handleConfirmBaixa} className="flex-1 bg-qq-yellow text-slate-900 py-3 rounded-xl font-bold hover:bg-qq-yellow-dark transition">Confirmar Baixa</button>
+                    <button 
+                        onClick={handleConfirmTransaction} 
+                        className={`flex-1 text-white py-3 rounded-xl font-bold shadow-lg transition active:scale-95 ${transactionType === 'in' ? 'bg-qq-green hover:bg-qq-green-dark shadow-green-200' : 'bg-qq-yellow hover:bg-qq-yellow-dark shadow-orange-200 text-slate-900'}`}
+                    >
+                        {transactionType === 'in' ? 'Adicionar' : 'Baixar'}
+                    </button>
                 </div>
             </div>
         </div>

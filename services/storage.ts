@@ -92,7 +92,8 @@ export const fetchMovements = async (): Promise<Movement[]> => {
         prodId: m.prod_id,
         prodName: m.prod_name,
         qty: m.qty,
-        obs: m.obs
+        obs: m.obs,
+        matricula: m.matricula // Mapeando matricula da leitura
       }));
     }
   }
@@ -107,6 +108,7 @@ export const saveMovement = async (movement: Movement): Promise<void> => {
       prod_name: movement.prodName,
       qty: movement.qty,
       obs: movement.obs,
+      matricula: movement.matricula, // Enviando matricula para o Supabase
       created_at: movement.date 
     }]);
     if (error) throw new Error(error.message);
