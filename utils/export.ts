@@ -1,4 +1,4 @@
-import { Product, Movement } from "../types";
+import { Product, Movement, Order } from "../types";
 
 const downloadCSV = (content: string, fileName: string) => {
   const blob = new Blob(["\uFEFF" + content], { type: 'text/csv;charset=utf-8;' });
@@ -21,10 +21,27 @@ export const exportStockCSV = (products: Product[]) => {
 };
 
 export const exportMovementsCSV = (movements: Movement[]) => {
-  const header = "Data;Produto;Qtd;Obs\n";
+  const header = "Data;Codigo;Produto;Qtd;Obs;Matricula\n";
   const rows = movements.map(m => {
     const date = new Date(m.date).toLocaleDateString();
-    return `${date};${m.prodName};${m.qty};${m.obs || ''}`;
+    // Se prodId for nulo, indicamos 'SISTEMA' ou vazio
+    const code = m.prodId || 'SISTEMA';
+    return `${date};${code};${m.prodName};${m.qty};${m.obs || ''};${m.matricula || ''}`;
   }).join("\n");
   downloadCSV(header + rows, `historico_${new Date().toISOString().slice(0,10)}.csv`);
+};
+
+export const exportOrdersCSV = (orders: Order[]) => {
+  const header = "Numero;Data;Cliente;Filial;Matricula;Status;Envio;Itens;Obs\n";
+  const rows = orders.map(o => {
+    const date = new Date(o.date).toLocaleDateString();
+    const envio = o.envioMalote ? 'Malote' : (o.entregaMatriz ? 'Matriz' : 'Pendente');
+    
+    // Resume os itens em uma string "ProdA(2) | ProdB(1)"
+    const itensSummary = o.items.map(i => `${i.productName}(${i.qtyRequested})`).join(' | ');
+    
+    return `${o.orderNumber};${date};${o.customerName};${o.filial};${o.matricula};${o.status === 'completed' ? 'Concluido' : 'Pendente'};${envio};${itensSummary};${o.obs || ''}`;
+  }).join("\n");
+  
+  downloadCSV(header + rows, `relatorio_pedidos_${new Date().toISOString().slice(0,10)}.csv`);
 };

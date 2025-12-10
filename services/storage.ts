@@ -109,7 +109,8 @@ export const fetchMovements = async (): Promise<Movement[]> => {
 
         // Normaliza prod_id caso venha como array
         const rawProdId = m.prod_id;
-        const prodId = Array.isArray(rawProdId) ? (rawProdId[0] || '') : rawProdId;
+        // Aceita null se vier do banco
+        const prodId = Array.isArray(rawProdId) ? (rawProdId[0] || null) : (rawProdId || null);
 
         if (!matricula && obs && typeof obs === 'string' && obs.startsWith('[Mat:')) {
             const match = obs.match(/^\[Mat: (.+?)\]\s*(.*)$/);
@@ -144,7 +145,7 @@ export const saveMovement = async (movement: Movement): Promise<void> => {
         : movement.obs;
 
     const payload = {
-      prod_id: movement.prodId,
+      prod_id: movement.prodId, // Pode ser null agora
       prod_name: movement.prodName,
       qty: movement.qty,
       obs: obsWithMatricula,
@@ -157,7 +158,10 @@ export const saveMovement = async (movement: Movement): Promise<void> => {
     // é provável que prod_id seja text[] (array). Tentamos enviar como array.
     if (error && error.message && error.message.includes('malformed array literal')) {
         console.warn("Retrying insert with array prod_id due to schema mismatch.");
-        const retryPayload = { ...payload, prod_id: [movement.prodId] };
+        // Se for null, enviamos [null] ou array vazio dependendo do caso, 
+        // mas geralmente esse erro ocorre quando prodId é string.
+        const retryVal = movement.prodId ? [movement.prodId] : [];
+        const retryPayload = { ...payload, prod_id: retryVal };
         const retry = await supabase.from('movements').insert([retryPayload]);
         if (retry.error) throw new Error(retry.error.message);
     } else if (error) {
@@ -196,20 +200,43 @@ export const fetchOrders = async (): Promise<Order[]> => {
   if (supabase) {
     const { data, error } = await supabase.from('orders').select('*').order('date', { ascending: false });
     if (!error && data) {
-      return data.map((o: any) => ({
-        id: o.id,
-        orderNumber: o.order_number,
-        customerName: o.customer_name,
-        matricula: o.matricula,
-        date: o.date,
-        status: o.status,
-        items: o.items || [], // JSON column
-        obs: o.obs
-      }));
+      return data.map((o: any) => {
+        const envioMalote = o.envio_malote === true;
+        const entregaMatriz = o.entrega_matriz === true;
+        
+        // Sanitiza o status: Só pode ser 'completed' se tiver flag.
+        // Se não tiver flag, forçamos 'pending' na leitura para corrigir inconsistências.
+        let status = o.status;
+        if (status === 'completed' && !envioMalote && !entregaMatriz) {
+            status = 'pending';
+        }
+
+        return {
+          id: o.id,
+          orderNumber: o.order_number,
+          customerName: o.customer_name,
+          filial: o.filial || '', // Mapped from DB
+          matricula: o.matricula,
+          date: o.date,
+          status: status,
+          items: o.items || [], // JSON column
+          obs: o.obs,
+          envioMalote: envioMalote,
+          entregaMatriz: entregaMatriz 
+        };
+      });
     }
   }
   const local = localStorage.getItem(LS_ORDERS);
-  return local ? JSON.parse(local) : [];
+  if (local) {
+      const orders = JSON.parse(local);
+      return orders.map((o: any) => ({
+          ...o,
+          // Sanitização local também
+          status: (o.status === 'completed' && !o.envioMalote && !o.entregaMatriz) ? 'pending' : o.status
+      }));
+  }
+  return [];
 };
 
 export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => {
@@ -217,17 +244,18 @@ export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => 
     const payload = {
       order_number: order.orderNumber,
       customer_name: order.customerName,
+      filial: order.filial, 
       matricula: order.matricula,
       date: order.date,
       status: order.status,
       items: order.items,
-      obs: order.obs
+      obs: order.obs,
+      // Força conversão para boolean para evitar erro no banco se for undefined
+      envio_malote: order.envioMalote === true, 
+      entrega_matriz: order.entregaMatriz === true
     };
 
     if (isNew) {
-      // Supabase gera ID automaticamente se for UUID, mas se quisermos controlar:
-      // Vamos deixar o supabase gerar o ID se a coluna for uuid default gen
-      // Se a tabela não existir, vai cair no catch do App
       const { error } = await supabase.from('orders').insert([{ ...payload, id: order.id }]);
       if (error) throw new Error(error.message);
     } else {

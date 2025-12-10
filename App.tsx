@@ -3,7 +3,7 @@ import {
   Package, QrCode, ClipboardList, Plus, Search, Settings, 
   Database, Wifi, WifiOff, AlertTriangle, FileText, ArrowRight, Minus, 
   Trash2, Box, History, ArrowDown, ArrowUp, Calendar, ShoppingCart, 
-  User, Hash, CheckSquare, Edit, X, RefreshCw, ScanLine, Upload
+  User, Hash, CheckSquare, Edit, X, RefreshCw, ScanLine, Upload, Truck, Building
 } from 'lucide-react';
 import { Product, Movement, ViewState, ToastMessage, Order, OrderItem } from './types';
 import * as storage from './services/storage';
@@ -58,11 +58,14 @@ const App: React.FC = () => {
       id: '',
       orderNumber: '',
       customerName: '',
+      filial: '',
       matricula: '',
       date: new Date().toISOString().slice(0, 10),
       status: 'pending',
       items: [],
-      obs: ''
+      obs: '',
+      envioMalote: false,
+      entregaMatriz: false
   };
   const [orderForm, setOrderForm] = useState<Order>(emptyOrderForm);
   const [orderItemSearch, setOrderItemSearch] = useState('');
@@ -243,9 +246,11 @@ const App: React.FC = () => {
           // Check if editing or new
           const isNew = !orders.find(o => o.id === orderForm.id);
           
-          // Se todos os itens já foram separados, marca como completo
+          // Calcula o status com base no estado atual das flags e itens
+          // (Mantém o estado se já estiver ok, ou volta pra pending se itens mudaram)
           const allPicked = orderForm.items.every(i => i.qtyPicked >= i.qtyRequested);
-          const status = allPicked ? 'completed' : 'pending';
+          const hasShipping = orderForm.envioMalote || orderForm.entregaMatriz;
+          const status = (allPicked && hasShipping) ? 'completed' : 'pending';
           
           await storage.saveOrder({ ...orderForm, status }, isNew);
           await refreshData();
@@ -256,6 +261,57 @@ const App: React.FC = () => {
       } finally {
           setIsLoading(false);
       }
+  };
+
+  const toggleShippingMethod = async (order: Order, method: 'malote' | 'matriz') => {
+    setIsLoading(true);
+    try {
+        const updatedOrder = { ...order };
+        
+        // Ensure strictly boolean for toggling
+        const currentMalote = !!order.envioMalote;
+        const currentMatriz = !!order.entregaMatriz;
+
+        if (method === 'malote') {
+            updatedOrder.envioMalote = !currentMalote;
+        } else {
+            updatedOrder.entregaMatriz = !currentMatriz;
+        }
+
+        const allPicked = updatedOrder.items.every(i => i.qtyPicked >= i.qtyRequested);
+        // Ensure hasShipping is also based on strict booleans
+        const hasShipping = (updatedOrder.envioMalote === true) || (updatedOrder.entregaMatriz === true);
+        
+        // Só marca como completo se tudo separado e tem envio
+        const newStatus = (allPicked && hasShipping) ? 'completed' : 'pending';
+        updatedOrder.status = newStatus;
+
+        await storage.saveOrder(updatedOrder, false);
+
+        // --- REGISTRAR NO HISTÓRICO SE CONCLUÍDO ---
+        // Se mudou para completed (e não estava), cria log
+        if (newStatus === 'completed' && order.status !== 'completed') {
+            const envioLabel = updatedOrder.envioMalote ? 'Malote' : 'Matriz';
+            await storage.saveMovement({
+                id: Date.now(),
+                date: new Date().toISOString(),
+                // FIXED: Enviar NULL em vez de 'ENVIO' para evitar erro de Foreign Key
+                prodId: null, 
+                prodName: `Envio Pedido #${updatedOrder.orderNumber}`,
+                qty: 0, // Zero pois não mexe no estoque, é apenas registro
+                obs: `Pedido Concluído. Via: ${envioLabel}. Filial: ${updatedOrder.filial}`,
+                matricula: updatedOrder.matricula
+            });
+        }
+
+        await refreshData();
+        addToast('success', 'Envio atualizado!');
+    } catch (e: any) {
+        console.error("Toggle Error:", e);
+        addToast('error', `Erro ao atualizar: ${e.message}`);
+    } finally {
+        setIsLoading(false);
+    }
   };
 
   const handleDeleteOrder = async (id: string) => {
@@ -350,12 +406,11 @@ const App: React.FC = () => {
               : i
           );
           
-          // Check completion
-          const allPicked = updatedItems.every(i => i.qtyPicked >= i.qtyRequested);
+          // FORÇA STATUS PENDING: O usuário quer que o status mude SÓ depois de flegar envio.
           const updatedOrder: Order = { 
               ...selectedOrder, 
               items: updatedItems,
-              status: allPicked ? 'completed' : 'pending' 
+              status: 'pending' // Mantém pendente mesmo se tudo separado
           };
 
           await storage.saveOrder(updatedOrder, false);
@@ -389,14 +444,15 @@ const App: React.FC = () => {
               const lines = text.split('\n');
               const newOrdersMap = new Map<string, Order>();
 
-              // Ignora cabeçalho
+              // Ignora cabeçalho se houver
               const startIdx = lines[0].toLowerCase().includes('numero') ? 1 : 0;
 
               for(let i = startIdx; i < lines.length; i++) {
                   const line = lines[i].trim();
                   if(!line) continue;
 
-                  const [num, client, mat, dateStr, prodCode, qtyStr] = line.split(';');
+                  // NOVO FORMATO: Numero;Cliente;Filial;Matricula;Data;CodProduto;Qtd
+                  const [num, client, fil, mat, dateStr, prodCode, qtyStr] = line.split(';');
                   
                   if(!num || !prodCode) continue;
 
@@ -412,6 +468,7 @@ const App: React.FC = () => {
                           id: crypto.randomUUID ? crypto.randomUUID() : `IMP-${Date.now()}-${i}`,
                           orderNumber: num,
                           customerName: client || 'Importado',
+                          filial: fil || '', // Salva a filial
                           matricula: mat || '',
                           date: dateStr || new Date().toISOString().slice(0,10),
                           status: 'pending',
@@ -656,21 +713,60 @@ const App: React.FC = () => {
                           const totalItems = order.items.reduce((acc, i) => acc + i.qtyRequested, 0);
                           const pickedItems = order.items.reduce((acc, i) => acc + i.qtyPicked, 0);
                           const progress = totalItems > 0 ? (pickedItems / totalItems) * 100 : 0;
+                          const isFullyPicked = totalItems > 0 && pickedItems === totalItems;
+                          // Validação visual estrita: Só mostra concluído se tiver flag!
+                          const isCompleted = order.status === 'completed' && (order.envioMalote || order.entregaMatriz);
 
                           return (
-                              <div key={order.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.99] transition-transform">
+                              <div key={order.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.99] transition-transform relative overflow-hidden">
+                                  
+                                  {/* Status Banner for Pending Shipment */}
+                                  {isFullyPicked && !isCompleted && (
+                                      <div className="absolute top-0 right-0 bg-orange-100 text-orange-700 px-3 py-1 text-[10px] font-bold uppercase rounded-bl-xl border-b border-l border-orange-200">
+                                          Pendente de Envio
+                                      </div>
+                                  )}
+
                                   <div className="flex justify-between items-start mb-2">
-                                      <div>
+                                      <div className="flex-1">
                                           <div className="flex items-center gap-2">
                                             <h3 className="font-bold text-slate-800">#{order.orderNumber}</h3>
-                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${order.status === 'completed' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>
-                                                {order.status === 'completed' ? 'Concluído' : 'Pendente'}
+                                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${isCompleted ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
+                                                {isCompleted ? 'Concluído' : (isFullyPicked ? 'Pronto' : 'Pendente')}
                                             </span>
                                           </div>
-                                          <p className="text-sm font-medium text-slate-600">{order.customerName}</p>
-                                          <p className="text-xs text-slate-400 mt-1">{new Date(order.date).toLocaleDateString('pt-BR')} • Mat: {order.matricula}</p>
+                                          <p className="text-sm font-medium text-slate-600 truncate max-w-[200px]">{order.customerName}</p>
+                                          <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-x-2 gap-y-1 items-center">
+                                            <span>{new Date(order.date).toLocaleDateString('pt-BR')}</span>
+                                            {order.filial && <span className="bg-slate-50 px-1.5 py-0.5 rounded border border-slate-100">Filial: {order.filial}</span>}
+                                            {order.matricula && <span>Mat: {order.matricula}</span>}
+                                          </div>
+                                          
+                                          {/* Logic for Checkboxes: Show only if fully picked */}
+                                          {isFullyPicked && (
+                                              <div className="flex gap-2 mt-3 pt-2 border-t border-slate-50">
+                                                <label className={`flex items-center gap-1.5 text-xs font-bold px-2 py-1.5 rounded-lg border cursor-pointer transition-colors ${order.envioMalote ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-white border-slate-200 text-slate-400'}`}>
+                                                    <input 
+                                                        type="checkbox" 
+                                                        checked={order.envioMalote || false} 
+                                                        onChange={() => toggleShippingMethod(order, 'malote')}
+                                                        className="w-3.5 h-3.5 text-purple-600 rounded focus:ring-purple-500"
+                                                    />
+                                                    <Truck size={14} /> Malote
+                                                </label>
+                                                <label className={`flex items-center gap-1.5 text-xs font-bold px-2 py-1.5 rounded-lg border cursor-pointer transition-colors ${order.entregaMatriz ? 'bg-blue-50 border-blue-200 text-blue-700' : 'bg-white border-slate-200 text-slate-400'}`}>
+                                                    <input 
+                                                        type="checkbox" 
+                                                        checked={order.entregaMatriz || false} 
+                                                        onChange={() => toggleShippingMethod(order, 'matriz')}
+                                                        className="w-3.5 h-3.5 text-blue-600 rounded focus:ring-blue-500"
+                                                    />
+                                                    <Building size={14} /> Matriz
+                                                </label>
+                                              </div>
+                                          )}
                                       </div>
-                                      <div className="flex gap-2">
+                                      <div className="flex gap-1 flex-col">
                                           <button onClick={() => openEditOrder(order)} className="p-2 text-slate-400 hover:text-qq-green hover:bg-green-50 rounded-lg transition">
                                               <Edit size={18} />
                                           </button>
@@ -778,15 +874,26 @@ const App: React.FC = () => {
                 ) : (
                     filteredHistory.map(m => (
                         <div key={m.id} className="bg-white p-4 rounded-xl border border-slate-100 shadow-sm flex items-start gap-4">
-                            <div className={`mt-1 p-2 rounded-lg ${m.qty > 0 ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
-                                {m.qty > 0 ? <Plus size={16} /> : <Minus size={16} />}
-                            </div>
+                            {/* Icon Logic: Plus/Minus for stock, Truck for Shipping */}
+                            {/* Verificamos se é nulo ou ENVIO (legacy) */}
+                            {(!m.prodId || m.prodId === 'ENVIO') ? (
+                                <div className="mt-1 p-2 rounded-lg bg-blue-50 text-blue-700">
+                                    <Truck size={16} />
+                                </div>
+                            ) : (
+                                <div className={`mt-1 p-2 rounded-lg ${m.qty > 0 ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
+                                    {m.qty > 0 ? <Plus size={16} /> : <Minus size={16} />}
+                                </div>
+                            )}
+                            
                             <div className="flex-1 min-w-0">
                                 <div className="flex justify-between items-start">
                                     <h4 className="font-bold text-slate-800 truncate">{m.prodName}</h4>
-                                    <span className={`font-bold ${m.qty > 0 ? 'text-green-600' : 'text-qq-yellow'}`}>
-                                        {m.qty > 0 ? `+${m.qty}` : m.qty}
-                                    </span>
+                                    {m.qty !== 0 && (
+                                        <span className={`font-bold ${m.qty > 0 ? 'text-green-600' : 'text-qq-yellow'}`}>
+                                            {m.qty > 0 ? `+${m.qty}` : m.qty}
+                                        </span>
+                                    )}
                                 </div>
                                 <div className="text-xs text-slate-400 mt-1 flex flex-wrap gap-2">
                                     <span>{new Date(m.date).toLocaleString('pt-BR')}</span>
@@ -930,13 +1037,18 @@ const App: React.FC = () => {
 
                           <div className="flex gap-3">
                             <div className="flex-1">
+                                <label className="text-[10px] font-bold text-slate-500 uppercase">Filial</label>
+                                <input type="text" value={orderForm.filial} onChange={e => setOrderForm({...orderForm, filial: e.target.value})} className="w-full border-2 border-slate-200 rounded-xl p-2 mt-1 text-sm outline-none focus:border-qq-green" placeholder="01" />
+                            </div>
+                            <div className="flex-1">
                                 <label className="text-[10px] font-bold text-slate-500 uppercase">Matrícula</label>
                                 <input type="text" value={orderForm.matricula} onChange={e => setOrderForm({...orderForm, matricula: e.target.value})} className="w-full border-2 border-slate-200 rounded-xl p-2 mt-1 text-sm outline-none focus:border-qq-green" placeholder="12345" />
                             </div>
-                            <div className="flex-[2]">
-                                <label className="text-[10px] font-bold text-slate-500 uppercase">Observações</label>
-                                <input type="text" value={orderForm.obs || ''} onChange={e => setOrderForm({...orderForm, obs: e.target.value})} className="w-full border-2 border-slate-200 rounded-xl p-2 mt-1 text-sm outline-none focus:border-qq-green" placeholder="Opcional..." />
-                            </div>
+                          </div>
+                          
+                          <div>
+                              <label className="text-[10px] font-bold text-slate-500 uppercase">Observações</label>
+                              <input type="text" value={orderForm.obs || ''} onChange={e => setOrderForm({...orderForm, obs: e.target.value})} className="w-full border-2 border-slate-200 rounded-xl p-2 mt-1 text-sm outline-none focus:border-qq-green" placeholder="Opcional..." />
                           </div>
                       </div>
 
@@ -1159,6 +1271,10 @@ const App: React.FC = () => {
                         <History size={24} className="mr-3" />
                         Histórico (.csv)
                     </button>
+                    <button onClick={() => exporter.exportOrdersCSV(orders)} className="w-full flex items-center p-4 rounded-xl border-2 border-blue-400/20 bg-blue-50/50 text-blue-700 font-bold hover:bg-blue-50 transition">
+                        <ShoppingCart size={24} className="mr-3" />
+                        Relatório Pedidos (.csv)
+                    </button>
                 </div>
                 <button onClick={() => setShowExport(false)} className="w-full mt-6 bg-slate-100 py-3 rounded-xl font-bold text-slate-600">Fechar</button>
             </div>
@@ -1172,13 +1288,13 @@ const App: React.FC = () => {
                 <h3 className="text-xl font-bold text-slate-800 mb-4 text-center">Importar Pedidos</h3>
                 
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs text-slate-600 mb-6">
-                    <p className="font-bold mb-2">Formato do CSV (separado por ;):</p>
+                    <p className="font-bold mb-2">Formato CSV (separado por ;):</p>
                     <code className="block bg-white p-2 rounded border border-slate-200 text-slate-500 mb-2 overflow-x-auto whitespace-nowrap">
-                        NumeroPedido;Cliente;Matricula;Data;CodProduto;Qtd
+                        Numero;Cliente;Filial;Matricula;Data;CodProduto;Qtd
                     </code>
                     <p>Exemplo:</p>
                     <code className="block bg-white p-2 rounded border border-slate-200 text-slate-500 overflow-x-auto whitespace-nowrap">
-                        101;João Silva;1234;2023-10-25;789101;2
+                        101;João;01;1234;2023-10-25;789101;2
                     </code>
                 </div>
 

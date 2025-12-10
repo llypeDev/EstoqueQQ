@@ -7,7 +7,7 @@ export interface Product {
 export interface Movement {
   id: number;
   date: string; // ISO string
-  prodId: string;
+  prodId: string | null; // Pode ser null para logs de sistema (ex: Envio)
   prodName: string;
   qty: number; // Negative for removal, positive for addition
   obs?: string;
@@ -25,11 +25,14 @@ export interface Order {
   id: string; // UUID or timestamp based
   orderNumber: string;
   customerName: string;
+  filial: string; // Novo campo Filial
   matricula: string;
   date: string; // Data da compra
   status: 'pending' | 'completed';
   items: OrderItem[];
   obs?: string;
+  envioMalote?: boolean;
+  entregaMatriz?: boolean;
 }
 
 export interface SupabaseConfig {
