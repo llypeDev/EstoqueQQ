@@ -1,5 +1,6 @@
-const CACHE_NAME = 'estoque-palavra-v1';
+const CACHE_NAME = 'estoque-palavra-v2';
 const urlsToCache = [
+  '.',
   './',
   './index.html',
   './index.tsx',
@@ -13,6 +14,8 @@ self.addEventListener('install', event => {
         return cache.addAll(urlsToCache);
       })
   );
+  // Força o SW a ativar imediatamente
+  self.skipWaiting();
 });
 
 self.addEventListener('fetch', event => {
@@ -23,6 +26,7 @@ self.addEventListener('fetch', event => {
         if (response) {
           return response;
         }
+
         return fetch(event.request).then(
           response => {
             // Check if we received a valid response
@@ -35,16 +39,21 @@ self.addEventListener('fetch', event => {
 
             caches.open(CACHE_NAME)
               .then(cache => {
-                // Only cache local files, avoiding large CDN cache issues in this simple setup
+                // Cache dynamic files correctly now
                 if (event.request.url.startsWith('http')) {
-                    // Optional: Cache logic for external requests
+                    cache.put(event.request, responseToCache);
                 }
-                // cache.put(event.request, responseToCache);
               });
 
             return response;
           }
-        );
+        ).catch(() => {
+          // Fallback logic could go here
+          // Se falhar (offline) e não estiver no cache, tenta retornar o index.html como fallback para navegação
+          if (event.request.mode === 'navigate') {
+              return caches.match('./index.html');
+          }
+        });
       })
   );
 });
@@ -62,4 +71,5 @@ self.addEventListener('activate', event => {
       );
     })
   );
+  return self.clients.claim();
 });
