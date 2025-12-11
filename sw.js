@@ -1,6 +1,5 @@
-const CACHE_NAME = 'estoque-palavra-v2';
+const CACHE_NAME = 'estoque-palavra-v3';
 const urlsToCache = [
-  '.',
   './',
   './index.html',
   './index.tsx',
@@ -39,7 +38,7 @@ self.addEventListener('fetch', event => {
 
             caches.open(CACHE_NAME)
               .then(cache => {
-                // Cache dynamic files correctly now
+                // Cache dynamic files correctly
                 if (event.request.url.startsWith('http')) {
                     cache.put(event.request, responseToCache);
                 }
@@ -48,8 +47,8 @@ self.addEventListener('fetch', event => {
             return response;
           }
         ).catch(() => {
-          // Fallback logic could go here
-          // Se falhar (offline) e não estiver no cache, tenta retornar o index.html como fallback para navegação
+          // Fallback para navegação: Se estiver offline ou der erro (404) na navegação principal,
+          // retorna o index.html que é a entrada do app.
           if (event.request.mode === 'navigate') {
               return caches.match('./index.html');
           }
