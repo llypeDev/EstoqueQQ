@@ -3,7 +3,7 @@ import {
   Package, QrCode, ClipboardList, Plus, Search, Settings, 
   Database, Wifi, WifiOff, AlertTriangle, FileText, ArrowRight, Minus, 
   Trash2, Box, History, ArrowDown, ArrowUp, Calendar, ShoppingCart, 
-  User, Hash, CheckSquare, Edit, X, RefreshCw, ScanLine, Upload, Truck, Building
+  User, Hash, CheckSquare, Edit, X, RefreshCw, ScanLine, Upload, Truck, Building, CloudUpload
 } from 'lucide-react';
 import { Product, Movement, ViewState, ToastMessage, Order, OrderItem } from './types';
 import * as storage from './services/storage';
@@ -20,6 +20,7 @@ const App: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(false);
+  const [pendingSync, setPendingSync] = useState(0); // Count of offline items
   const [search, setSearch] = useState('');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
@@ -45,7 +46,6 @@ const App: React.FC = () => {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
   // Form States
-  const [configForm, setConfigForm] = useState(storage.getSupabaseConfig());
   const [newProdForm, setNewProdForm] = useState({ id: '', name: '', qty: '' });
   const [baixaForm, setBaixaForm] = useState({ qty: 1, obs: '', matricula: '' });
   const [transactionType, setTransactionType] = useState<'in' | 'out'>('out');
@@ -90,6 +90,10 @@ const App: React.FC = () => {
       setProducts(prods);
       setMovements(movs);
       setOrders(ords);
+      
+      // Check for pending sync items
+      setPendingSync(storage.getPendingSyncCount());
+
     } catch (e) {
       console.error(e);
       addToast('error', 'Erro ao carregar dados.');
@@ -98,31 +102,48 @@ const App: React.FC = () => {
     }
   }, []);
 
+  const runSync = useCallback(async () => {
+      const count = storage.getPendingSyncCount();
+      if (count > 0 && isOnline) {
+          addToast('info', `Sincronizando ${count} itens offline...`);
+          const result = await storage.processSyncQueue();
+          addToast('success', result);
+          refreshData(); // Refresh to get server timestamps/IDs if needed
+      }
+  }, [isOnline, refreshData]);
+
   // --- EFFECTS ---
   useEffect(() => {
     const online = storage.initSupabase();
     setIsOnline(online);
-    refreshData();
+    refreshData().then(() => {
+        // Try to sync on startup if online
+        if (online) {
+            const count = storage.getPendingSyncCount();
+            if(count > 0) {
+                 addToast('info', `Enviando ${count} itens pendentes...`);
+                 storage.processSyncQueue().then(res => {
+                     addToast('success', res);
+                     refreshData();
+                 });
+            }
+        }
+    });
   }, [refreshData]);
 
   // --- HANDLERS ---
   
-  const handleSaveSettings = () => {
-    storage.saveSupabaseConfig(configForm);
+  const handleReconnect = async () => {
     const online = storage.initSupabase();
     setIsOnline(online);
-    setShowSettings(false);
-    addToast('success', online ? 'Conectado ao Supabase!' : 'Configuração salva (Offline).');
-    refreshData();
-  };
-
-  const handleDisconnect = () => {
-    storage.clearSupabaseConfig();
-    setIsOnline(false);
-    setConfigForm({ url: '', key: '' });
-    setShowSettings(false);
-    addToast('info', 'Desconectado. Usando modo offline.');
-    refreshData();
+    if(online) {
+        addToast('success', 'Conexão restabelecida!');
+        await runSync(); // Trigger sync manually
+        await refreshData();
+        setShowSettings(false);
+    } else {
+        addToast('error', 'Falha ao conectar. Verifique internet.');
+    }
   };
 
   const handleClearHistory = async () => {
@@ -158,7 +179,7 @@ const App: React.FC = () => {
       await refreshData();
       setShowAddProduct(false);
       setNewProdForm({ id: '', name: '', qty: '' });
-      addToast('success', 'Produto salvo!');
+      addToast('success', isOnline ? 'Produto salvo!' : 'Salvo offline. Será enviado ao conectar.');
     } catch (e: any) {
       addToast('error', e.message || 'Erro ao salvar.');
     } finally {
@@ -188,7 +209,9 @@ const App: React.FC = () => {
       const newQty = selectedProduct.qty + finalQtyDelta;
       const updatedProd = { ...selectedProduct, qty: newQty };
       
+      // Note: saveProduct will handle offline queue automatically
       await storage.saveProduct(updatedProd, false);
+      
       await storage.saveMovement({
         id: Date.now(),
         date: new Date().toISOString(),
@@ -203,7 +226,7 @@ const App: React.FC = () => {
       setShowBaixa(false);
       setSelectedProduct(null);
       setBaixaForm(prev => ({ ...prev, qty: 1, obs: '' })); 
-      addToast('success', 'Estoque atualizado!');
+      addToast('success', isOnline ? 'Estoque atualizado!' : 'Salvo offline. Será enviado ao conectar.');
     } catch (e: any) {
       addToast('error', e.message);
     } finally {
@@ -246,8 +269,6 @@ const App: React.FC = () => {
           // Check if editing or new
           const isNew = !orders.find(o => o.id === orderForm.id);
           
-          // Calcula o status com base no estado atual das flags e itens
-          // (Mantém o estado se já estiver ok, ou volta pra pending se itens mudaram)
           const allPicked = orderForm.items.every(i => i.qtyPicked >= i.qtyRequested);
           const hasShipping = orderForm.envioMalote || orderForm.entregaMatriz;
           const status = (allPicked && hasShipping) ? 'completed' : 'pending';
@@ -255,7 +276,7 @@ const App: React.FC = () => {
           await storage.saveOrder({ ...orderForm, status }, isNew);
           await refreshData();
           setShowOrderForm(false);
-          addToast('success', 'Pedido salvo!');
+          addToast('success', isOnline ? 'Pedido salvo!' : 'Salvo offline. Será enviado ao conectar.');
       } catch (e: any) {
           addToast('error', 'Erro ao salvar pedido: ' + e.message);
       } finally {
@@ -279,33 +300,28 @@ const App: React.FC = () => {
         }
 
         const allPicked = updatedOrder.items.every(i => i.qtyPicked >= i.qtyRequested);
-        // Ensure hasShipping is also based on strict booleans
         const hasShipping = (updatedOrder.envioMalote === true) || (updatedOrder.entregaMatriz === true);
         
-        // Só marca como completo se tudo separado e tem envio
         const newStatus = (allPicked && hasShipping) ? 'completed' : 'pending';
         updatedOrder.status = newStatus;
 
         await storage.saveOrder(updatedOrder, false);
 
-        // --- REGISTRAR NO HISTÓRICO SE CONCLUÍDO ---
-        // Se mudou para completed (e não estava), cria log
         if (newStatus === 'completed' && order.status !== 'completed') {
             const envioLabel = updatedOrder.envioMalote ? 'Malote' : 'Matriz';
             await storage.saveMovement({
                 id: Date.now(),
                 date: new Date().toISOString(),
-                // FIXED: Enviar NULL em vez de 'ENVIO' para evitar erro de Foreign Key
                 prodId: null, 
                 prodName: `Envio Pedido #${updatedOrder.orderNumber}`,
-                qty: 0, // Zero pois não mexe no estoque, é apenas registro
+                qty: 0,
                 obs: `Pedido Concluído. Via: ${envioLabel}. Filial: ${updatedOrder.filial}`,
                 matricula: updatedOrder.matricula
             });
         }
 
         await refreshData();
-        addToast('success', 'Envio atualizado!');
+        addToast('success', isOnline ? 'Envio atualizado!' : 'Salvo offline.');
     } catch (e: any) {
         console.error("Toggle Error:", e);
         addToast('error', `Erro ao atualizar: ${e.message}`);
@@ -331,7 +347,6 @@ const App: React.FC = () => {
   const addProductToOrder = (product: Product) => {
       const existing = orderForm.items.find(i => i.productId === product.id);
       if (existing) {
-          // Increment
           const updatedItems = orderForm.items.map(i => 
               i.productId === product.id 
               ? { ...i, qtyRequested: i.qtyRequested + 1 }
@@ -339,7 +354,6 @@ const App: React.FC = () => {
           );
           setOrderForm({ ...orderForm, items: updatedItems });
       } else {
-          // Add new
           const newItem: OrderItem = {
               productId: product.id,
               productName: product.name,
@@ -406,11 +420,10 @@ const App: React.FC = () => {
               : i
           );
           
-          // FORÇA STATUS PENDING: O usuário quer que o status mude SÓ depois de flegar envio.
           const updatedOrder: Order = { 
               ...selectedOrder, 
               items: updatedItems,
-              status: 'pending' // Mantém pendente mesmo se tudo separado
+              status: 'pending'
           };
 
           await storage.saveOrder(updatedOrder, false);
@@ -418,7 +431,7 @@ const App: React.FC = () => {
           // Update Local State
           setSelectedOrder(updatedOrder);
           
-          await refreshData(); // Refresh global data to update stock counts everywhere
+          await refreshData(); 
           addToast('success', `Item ${item.productName} baixado.`);
 
       } catch (e: any) {
@@ -613,10 +626,14 @@ const App: React.FC = () => {
             </div>
         </div>
         <div className="flex gap-2">
+            {pendingSync > 0 && !isOnline && (
+                 <div className="w-10 h-10 flex items-center justify-center bg-orange-500 rounded-full animate-pulse">
+                     <CloudUpload size={18} />
+                 </div>
+            )}
             <button onClick={refreshData} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
                 <RefreshCw size={18} className={isLoading ? "animate-spin" : ""} />
             </button>
-            {/* Export Button (History/Reports) - Now with FileText icon */}
             <button onClick={() => setShowExport(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition active:scale-95 backdrop-blur-sm">
                 <FileText size={18} />
             </button>
@@ -945,7 +962,7 @@ const App: React.FC = () => {
 
       {/* --- MODALS --- */}
       
-      {/* Settings Modal */}
+      {/* Settings Modal - SIMPLIFICADO PARA SEGURANÇA */}
       {showSettings && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-fade-in">
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
@@ -956,23 +973,36 @@ const App: React.FC = () => {
                     <h3 className="text-xl font-bold text-slate-800">Conexão</h3>
                 </div>
                 
-                <div className="space-y-4">
-                    <div>
-                        <label className="text-xs font-bold text-slate-500 uppercase">URL do Projeto</label>
-                        <input type="text" value={configForm.url} onChange={e => setConfigForm({...configForm, url: e.target.value})} className="w-full mt-1 border-2 border-slate-200 rounded-xl p-2.5 text-sm focus:border-qq-green outline-none font-mono" />
+                <div className="space-y-6">
+                    {/* Status da Conexão */}
+                    <div className={`p-4 rounded-xl border flex items-center gap-3 ${isOnline ? 'bg-green-50 border-green-200' : 'bg-slate-50 border-slate-200'}`}>
+                         <div className={`w-3 h-3 rounded-full ${isOnline ? 'bg-green-500' : 'bg-slate-400'}`}></div>
+                         <div>
+                             <p className="font-bold text-slate-800">{isOnline ? 'Conectado' : 'Modo Offline'}</p>
+                             <p className="text-xs text-slate-500">{isOnline ? 'Sincronizado com Supabase' : 'Dados salvos localmente'}</p>
+                         </div>
                     </div>
-                    <div>
-                        <label className="text-xs font-bold text-slate-500 uppercase">Chave de API (Anon)</label>
-                        <input type="password" value={configForm.key} onChange={e => setConfigForm({...configForm, key: e.target.value})} className="w-full mt-1 border-2 border-slate-200 rounded-xl p-2.5 text-sm focus:border-qq-green outline-none font-mono" />
-                    </div>
+
+                    {pendingSync > 0 && !isOnline && (
+                        <div className="p-4 rounded-xl bg-orange-50 border border-orange-100 flex items-center gap-3">
+                            <CloudUpload className="text-orange-500" size={24} />
+                            <div>
+                                <p className="font-bold text-orange-700">{pendingSync} itens pendentes</p>
+                                <p className="text-xs text-orange-600">Conecte-se para enviar.</p>
+                            </div>
+                        </div>
+                    )}
+                    
+                    {!isOnline && (
+                        <p className="text-xs text-slate-400 text-center">
+                            Verifique se as chaves estão configuradas corretamente no código fonte.
+                        </p>
+                    )}
                 </div>
 
                 <div className="mt-6 flex flex-col gap-3">
-                    <button onClick={handleSaveSettings} className="bg-qq-green text-white py-3 rounded-xl font-bold hover:bg-qq-green-dark transition">Salvar & Conectar</button>
-                    {isOnline && (
-                        <button onClick={handleDisconnect} className="bg-white border border-slate-200 text-slate-600 py-3 rounded-xl font-bold hover:bg-slate-50 transition">Desconectar</button>
-                    )}
-                    <button onClick={() => setShowSettings(false)} className="text-slate-400 text-sm font-medium py-2">Cancelar</button>
+                    <button onClick={handleReconnect} className="bg-slate-100 text-slate-700 py-3 rounded-xl font-bold hover:bg-slate-200 transition">Testar Conexão</button>
+                    <button onClick={() => setShowSettings(false)} className="bg-qq-green text-white py-3 rounded-xl font-bold hover:bg-qq-green-dark transition">Fechar</button>
                 </div>
             </div>
         </div>

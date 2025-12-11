@@ -47,3 +47,12 @@ export interface ToastMessage {
   type: 'success' | 'error' | 'info';
   text: string;
 }
+
+export interface SyncItem {
+  id: string | number;
+  type: 'PRODUCT' | 'MOVEMENT' | 'ORDER' | 'DELETE_ORDER';
+  action: 'SAVE' | 'DELETE';
+  payload: any;
+  isNew?: boolean; // Para produtos e pedidos
+  timestamp: number;
+}
