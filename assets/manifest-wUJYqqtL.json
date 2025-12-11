@@ -1,7 +1,8 @@
 {
   "name": "Estoque Palavra",
   "short_name": "Estoque",
-  "start_url": "./index.html",
+  "start_url": ".",
+  "scope": ".",
   "display": "standalone",
   "background_color": "#f8fafc",
   "theme_color": "#008f4c",
