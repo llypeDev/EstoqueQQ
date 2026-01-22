@@ -33,9 +33,12 @@ export interface Order {
   obs?: string;
   envioMalote?: boolean;
   entregaMatriz?: boolean;
+<<<<<<< HEAD
   paymentMethod?: string; // Novo
   whatsapp?: string;      // Novo
   cardLast4?: string;     // Novo: Últimos 4 dígitos
+=======
+>>>>>>> b9e5aa8f7b4227e66e8d1853e5cef217ed572511
 }
 
 export interface SupabaseConfig {

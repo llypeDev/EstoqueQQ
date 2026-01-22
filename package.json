@@ -1,9 +1,15 @@
 {
+<<<<<<< HEAD
   "name": "estoque-palavra",
+=======
+  "homepage": "https://llypeDev.github.io/EstoqueQQ",
+  "name": "estoque-qq-react",
+>>>>>>> b9e5aa8f7b4227e66e8d1853e5cef217ed572511
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+<<<<<<< HEAD
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview"
@@ -14,11 +20,30 @@
     "lucide-react": "^0.556.0",
     "@supabase/supabase-js": "^2.87.0",
     "html5-qrcode": "^2.3.8",
+=======
+  "dev": "vite",
+  "build": "tsc && vite build",
+  "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+  "preview": "vite preview",
+  "predeploy": "npm run build",
+  "deploy": "gh-pages -d dist"
+},
+  "dependencies": {
+    "@supabase/supabase-js": "^2.87.0",
+    "html5-qrcode": "^2.3.8",
+    "lucide-react": "^0.556.0",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+>>>>>>> b9e5aa8f7b4227e66e8d1853e5cef217ed572511
     "react-qr-code": "^2.0.18"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
     "@vitejs/plugin-react": "^5.0.0",
+<<<<<<< HEAD
+=======
+    "gh-pages": "^6.3.0",
+>>>>>>> b9e5aa8f7b4227e66e8d1853e5cef217ed572511
     "typescript": "~5.8.2",
     "vite": "^6.2.0"
   }

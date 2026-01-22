@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "name": "Estoque Palavra",
+=======
+  "name": "Estoque QQ React",
+>>>>>>> b9e5aa8f7b4227e66e8d1853e5cef217ed572511
   "description": "Gerenciamento de estoque moderno com suporte a Supabase e leitura de QR Code.",
   "requestFramePermissions": [
     "camera"
