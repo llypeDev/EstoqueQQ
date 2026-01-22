@@ -74,12 +74,12 @@ export const getPendingSyncCount = (): number => {
   }
 };
 
-export const processSyncQueue = async (): Promise<string> => {
+export const processSyncQueue = async (): Promise<string | null> => {
   const queueJson = localStorage.getItem(LS_SYNC_QUEUE);
-  if (!queueJson) return 'Vazio';
+  if (!queueJson) return null;
 
   const queue: SyncItem[] = JSON.parse(queueJson);
-  if (queue.length === 0) return 'Vazio';
+  if (queue.length === 0) return null;
 
   let successCount = 0;
   const failedItems: SyncItem[] = [];
@@ -87,6 +87,7 @@ export const processSyncQueue = async (): Promise<string> => {
   for (const item of queue) {
     try {
       if (item.type === 'PRODUCT') {
+         // Passa true no skipLocal para não duplicar lógica local
          await saveProduct(item.payload, item.isNew || false, true);
       } else if (item.type === 'MOVEMENT') {
          await saveMovement(item.payload, true);
@@ -115,7 +116,6 @@ export const processSyncQueue = async (): Promise<string> => {
 
 export const fetchProducts = async (): Promise<Product[]> => {
   try {
-    // Usa supabaseInventory
     const { data, error } = await supabaseInventory
       .from('products')
       .select('*')
@@ -125,16 +125,15 @@ export const fetchProducts = async (): Promise<Product[]> => {
     localStorage.setItem(LS_PRODUCTS, JSON.stringify(data));
     return data || [];
   } catch (e) {
-    // console.error("Erro fetchProducts", e); // Silencioso para fallback offline
     const local = localStorage.getItem(LS_PRODUCTS);
     return local ? JSON.parse(local) : [];
   }
 };
 
 export const saveProduct = async (product: Product, isNew: boolean, skipLocal: boolean = false): Promise<void> => {
+  // 1. Tenta salvar remoto
   try {
     let error;
-    // Usa supabaseInventory
     if (isNew) {
       ({ error } = await supabaseInventory.from('products').insert([product]));
     } else {
@@ -145,12 +144,15 @@ export const saveProduct = async (product: Product, isNew: boolean, skipLocal: b
     }
     if (error) throw error;
   } catch (e) {
+    // 2. Se falhar e não for apenas atualização local de sync, põe na fila
     if (!skipLocal) {
+        console.warn("Falha ao salvar produto remoto, adicionando à fila.", e);
         addToSyncQueue({ type: 'PRODUCT', action: 'SAVE', payload: product, isNew, id: product.id });
     }
-    throw e;
+    // NOTA: Não damos throw aqui para permitir que a execução continue e salve localmente
   } 
   
+  // 3. Salva localmente (Sempre, a menos que skipLocal seja true)
   if (!skipLocal) {
     const localProducts = JSON.parse(localStorage.getItem(LS_PRODUCTS) || '[]');
     let newProducts = [...localProducts];
@@ -166,7 +168,6 @@ export const saveProduct = async (product: Product, isNew: boolean, skipLocal: b
 
 export const fetchMovements = async (): Promise<Movement[]> => {
   try {
-    // Usa supabaseInventory
     const { data, error } = await supabaseInventory
       .from('movements')
       .select('*')
@@ -195,7 +196,6 @@ export const fetchMovements = async (): Promise<Movement[]> => {
 
 export const saveMovement = async (movement: Movement, skipLocal: boolean = false): Promise<void> => {
   try {
-    // Usa supabaseInventory
     const { error } = await supabaseInventory.from('movements').insert([{
         prod_id: movement.prodId,
         prod_name: movement.prodName,
@@ -207,9 +207,9 @@ export const saveMovement = async (movement: Movement, skipLocal: boolean = fals
     if (error) throw error;
   } catch (e) {
     if (!skipLocal) {
+        console.warn("Falha ao salvar movimento remoto, adicionando à fila.", e);
         addToSyncQueue({ type: 'MOVEMENT', action: 'SAVE', payload: movement, id: movement.id });
     }
-    throw e;
   } 
   
   if (!skipLocal) {
@@ -221,12 +221,12 @@ export const saveMovement = async (movement: Movement, skipLocal: boolean = fals
 
 export const deleteAllMovements = async (): Promise<void> => {
     try {
-        // Usa supabaseInventory
         const { error } = await supabaseInventory.from('movements').delete().neq('id', 0);
         if (error) throw error;
     } catch (e) {
-        console.error(e);
+        console.error("Erro ao apagar histórico remoto", e);
     }
+    // Sempre apaga local
     localStorage.removeItem(LS_MOVEMENTS);
 };
 
@@ -234,7 +234,6 @@ export const deleteAllMovements = async (): Promise<void> => {
 
 export const fetchOrders = async (): Promise<Order[]> => {
   try {
-    // 1. Busca pedidos do banco do site
     const { data, error } = await supabaseOrders
       .from('orders')
       .select('*, order_items(*)')
@@ -242,16 +241,13 @@ export const fetchOrders = async (): Promise<Order[]> => {
     
     if (error) throw error;
     
-    // 2. Prepara dados locais para manter progresso de separação
     const localOrdersStr = localStorage.getItem(LS_ORDERS);
     const localOrders: Order[] = localOrdersStr ? JSON.parse(localOrdersStr) : [];
     const localMap = new Map(localOrders.map(o => [o.id, o]));
 
-    // 3. RECUPERA PRODUTOS DO ESTOQUE PARA CRUZAR DADOS VIA SKU (Nome)
     const localProductsStr = localStorage.getItem(LS_PRODUCTS);
     const productsList: Product[] = localProductsStr ? JSON.parse(localProductsStr) : [];
     
-    // Cria Map normalizando as chaves para string e sem espaços
     const productMap = new Map<string, string>();
     productsList.forEach(p => {
         if(p.id) productMap.set(String(p.id).trim(), p.name);
@@ -261,21 +257,10 @@ export const fetchOrders = async (): Promise<Order[]> => {
         const localOrder = localMap.get(o.id);
         
         const items: OrderItem[] = (o.order_items || []).map((item: any) => {
-            // Lógica robusta para encontrar o SKU
-            // Tenta pegar 'sku', se nulo pega 'product_id', se nulo pega 'id'
             const rawSku = item.sku ?? item.product_id ?? item.id;
-            
-            // Normaliza para string e remove espaços para garantir match com o Map
             const sku = rawSku ? String(rawSku).trim() : 'N/A';
-            
-            // Tenta achar o nome no mapa de produtos pelo SKU normalizado.
             const catalogName = productMap.get(sku);
-            
-            // Se achou no estoque, usa. Se não, tenta usar o nome que veio no pedido. Se não, fallback.
             const pName = catalogName || item.product_name || `Produto SKU: ${sku}`;
-
-            // Preserva contagem local
-            // Precisamos garantir que a comparação aqui também seja robusta
             const localItem = localOrder?.items.find((li: OrderItem) => String(li.productId).trim() === sku);
             
             return {
@@ -286,19 +271,13 @@ export const fetchOrders = async (): Promise<Order[]> => {
             };
         });
 
-        // FORMATAÇÃO DO MÉTODO DE PAGAMENTO
-        // 1. Limpa underscores (ex: CARTAO_QUERO_QUERO -> CARTAO QUERO QUERO)
         const paymentInfo = (o.payment_method || '').replace(/_/g, ' ');
-
-        // 2. Busca agressiva pelos 4 últimos dígitos em colunas comuns (Adicionado card_last_digits)
         let last4 = o.card_last_digits || o.card_last4 || o.last4 || o.last_4 || o.card_last_four || o.card_digits;
 
         if (!last4 && o.card_number) {
-            // Fallback caso venha num campo 'card_number'
             const nums = String(o.card_number).replace(/\D/g, '');
             if(nums.length >= 4) last4 = nums.slice(-4);
         } else if (!last4 && typeof o.payment_details === 'object' && o.payment_details?.last4) {
-            // Fallback para coluna JSON payment_details (comum em gateways)
             last4 = o.payment_details.last4;
         }
 
@@ -312,11 +291,9 @@ export const fetchOrders = async (): Promise<Order[]> => {
             status: o.status === 'completed' ? 'completed' : 'pending',
             items: items,
             obs: o.obs || '',
-            // Mapeando novos campos
             whatsapp: o.whatsapp || o.phone || '',
             paymentMethod: paymentInfo,
             cardLast4: last4 || '',
-            
             envioMalote: localOrder ? localOrder.envioMalote : false,
             entregaMatriz: localOrder ? localOrder.entregaMatriz : false
         };
@@ -325,7 +302,6 @@ export const fetchOrders = async (): Promise<Order[]> => {
     localStorage.setItem(LS_ORDERS, JSON.stringify(formatted));
     return formatted;
   } catch (e) {
-    console.error("Erro ao buscar pedidos (Orders DB):", e);
     const local = localStorage.getItem(LS_ORDERS);
     return local ? JSON.parse(local) : [];
   }
@@ -334,21 +310,18 @@ export const fetchOrders = async (): Promise<Order[]> => {
 export const saveOrder = async (order: Order, isNew: boolean, skipLocal: boolean = false): Promise<void> => {
   try {
     let error;
-
     const orderPayload = {
         ticket_number: parseInt(order.orderNumber) || 0,
         full_name: order.customerName,
         matricula: order.matricula,
         segmento: order.filial, 
         status: order.status,
-        // Novos campos
         payment_method: order.paymentMethod,
-        card_last_digits: order.cardLast4, // Corrigido para card_last_digits
+        card_last_digits: order.cardLast4,
         whatsapp: order.whatsapp,
     };
 
     if (isNew) {
-      // Usa supabaseOrders
       const { error: orderError } = await supabaseOrders
         .from('orders')
         .insert([{ ...orderPayload, id: order.id }]);
@@ -361,37 +334,31 @@ export const saveOrder = async (order: Order, isNew: boolean, skipLocal: boolean
               product_id: item.productId,
               product_name: item.productName,
               quantity: item.qtyRequested,
-              sku: item.productId // Garante que o SKU seja salvo
+              sku: item.productId
           }));
-          
-          // Usa supabaseOrders
           const { error: itemsError } = await supabaseOrders
             .from('order_items')
             .insert(itemsPayload);
-            
           if (itemsError) throw itemsError;
       }
-
     } else {
-      // Usa supabaseOrders para atualizar Status e campos editados
       ({ error } = await supabaseOrders
         .from('orders')
         .update({ 
             status: order.status,
             payment_method: order.paymentMethod,
-            card_last_digits: order.cardLast4, // Corrigido para card_last_digits
+            card_last_digits: order.cardLast4,
             whatsapp: order.whatsapp
         }) 
         .eq('id', order.id));
     }
     
     if (error) throw error;
-
   } catch (e) {
     if (!skipLocal) {
+        console.warn("Falha ao salvar pedido remoto, adicionando à fila.", e);
         addToSyncQueue({ type: 'ORDER', action: 'SAVE', payload: order, isNew, id: order.id });
     }
-    throw e;
   } 
   
   if (!skipLocal) {
@@ -409,14 +376,13 @@ export const saveOrder = async (order: Order, isNew: boolean, skipLocal: boolean
 
 export const deleteOrder = async (id: string, skipLocal: boolean = false): Promise<void> => {
     try {
-        // Usa supabaseOrders
         const { error } = await supabaseOrders.from('orders').delete().eq('id', id);
         if (error) throw error;
     } catch (e) {
         if (!skipLocal) {
+            console.warn("Falha ao deletar pedido remoto, adicionando à fila.", e);
             addToSyncQueue({ type: 'DELETE_ORDER', action: 'DELETE', payload: id, id: id });
         }
-        throw e;
     } 
     
     if (!skipLocal) {

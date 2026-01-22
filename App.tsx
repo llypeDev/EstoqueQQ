@@ -100,7 +100,9 @@ const App: React.FC = () => {
       setIsLoading(true);
       try {
           const res = await storage.processSyncQueue();
-          addToast('info', res);
+          if (res) {
+            addToast('info', res);
+          }
           await refreshData();
       } catch (e) {
           addToast('error', 'Falha na sincronização.');
