@@ -19,14 +19,8 @@ let supabaseOrders: SupabaseClient;
 
 export const initDatabase = (): boolean => {
   try {
-    // Inicializa cliente do Estoque
-    if (INV_URL && INV_KEY) {
-        supabaseInventory = createClient(INV_URL, INV_KEY);
-    }
-    // Inicializa cliente de Pedidos
-    if (ORD_URL && ORD_KEY) {
-        supabaseOrders = createClient(ORD_URL, ORD_KEY);
-    }
+    if (INV_URL && INV_KEY) supabaseInventory = createClient(INV_URL, INV_KEY);
+    if (ORD_URL && ORD_KEY) supabaseOrders = createClient(ORD_URL, ORD_KEY);
     return true;
   } catch (e) {
     console.error('Erro ao inicializar Supabase Clients:', e);
@@ -37,21 +31,18 @@ export const initDatabase = (): boolean => {
 export const testConnection = async (): Promise<{inventory: boolean, orders: boolean}> => {
     let inventory = false;
     let orders = false;
-    
     try {
         if (supabaseInventory) {
             const { error } = await supabaseInventory.from('products').select('id').limit(1);
             inventory = !error;
         }
     } catch (e) { console.error('Inv Check Error', e); }
-
     try {
         if (supabaseOrders) {
              const { error } = await supabaseOrders.from('orders').select('id').limit(1);
              orders = !error;
         }
     } catch (e) { console.error('Ord Check Error', e); }
-
     return { inventory, orders };
 };
 
@@ -60,25 +51,24 @@ export const testConnection = async (): Promise<{inventory: boolean, orders: boo
 const addToSyncQueue = (item: Omit<SyncItem, 'timestamp'>) => {
   const queueJson = localStorage.getItem(LS_SYNC_QUEUE);
   const queue: SyncItem[] = queueJson ? JSON.parse(queueJson) : [];
-  queue.push({ ...item, timestamp: Date.now() });
-  localStorage.setItem(LS_SYNC_QUEUE, JSON.stringify(queue));
+  // Remove itens duplicados se for UPDATE/DELETE do mesmo ID para evitar redundância
+  const filteredQueue = queue.filter(q => !(q.id === item.id && q.type === item.type));
+  filteredQueue.push({ ...item, timestamp: Date.now() });
+  localStorage.setItem(LS_SYNC_QUEUE, JSON.stringify(filteredQueue));
 };
 
+const getQueue = (): SyncItem[] => {
+    try {
+        return JSON.parse(localStorage.getItem(LS_SYNC_QUEUE) || '[]');
+    } catch { return []; }
+}
+
 export const getPendingSyncCount = (): number => {
-  const queueJson = localStorage.getItem(LS_SYNC_QUEUE);
-  if (!queueJson) return 0;
-  try {
-    return JSON.parse(queueJson).length;
-  } catch {
-    return 0;
-  }
+  return getQueue().length;
 };
 
 export const processSyncQueue = async (): Promise<string | null> => {
-  const queueJson = localStorage.getItem(LS_SYNC_QUEUE);
-  if (!queueJson) return null;
-
-  const queue: SyncItem[] = JSON.parse(queueJson);
+  const queue = getQueue();
   if (queue.length === 0) return null;
 
   let successCount = 0;
@@ -87,7 +77,6 @@ export const processSyncQueue = async (): Promise<string | null> => {
   for (const item of queue) {
     try {
       if (item.type === 'PRODUCT') {
-         // Passa true no skipLocal para não duplicar lógica local
          await saveProduct(item.payload, item.isNew || false, true);
       } else if (item.type === 'MOVEMENT') {
          await saveMovement(item.payload, true);
@@ -116,14 +105,33 @@ export const processSyncQueue = async (): Promise<string | null> => {
 
 export const fetchProducts = async (): Promise<Product[]> => {
   try {
+    // 1. Busca da Nuvem
     const { data, error } = await supabaseInventory
       .from('products')
       .select('*')
       .order('name');
     
     if (error) throw error;
-    localStorage.setItem(LS_PRODUCTS, JSON.stringify(data));
-    return data || [];
+    
+    let products = data || [];
+
+    // 2. APLICA ALTERAÇÕES PENDENTES (UI Otimista)
+    // Se houver uma alteração de produto na fila que ainda não foi pro banco,
+    // nós aplicamos ela sobre o resultado do banco para o usuário ver o dado atualizado.
+    const queue = getQueue();
+    const pendingProducts = queue.filter(i => i.type === 'PRODUCT');
+    
+    pendingProducts.forEach(item => {
+        const idx = products.findIndex((p: Product) => p.id === item.payload.id);
+        if (idx !== -1) {
+            products[idx] = item.payload; // Sobrescreve com o dado local mais recente
+        } else if (item.isNew) {
+            products.unshift(item.payload); // Adiciona se for novo
+        }
+    });
+
+    localStorage.setItem(LS_PRODUCTS, JSON.stringify(products));
+    return products;
   } catch (e) {
     const local = localStorage.getItem(LS_PRODUCTS);
     return local ? JSON.parse(local) : [];
@@ -131,7 +139,6 @@ export const fetchProducts = async (): Promise<Product[]> => {
 };
 
 export const saveProduct = async (product: Product, isNew: boolean, skipLocal: boolean = false): Promise<void> => {
-  // 1. Tenta salvar remoto
   try {
     let error;
     if (isNew) {
@@ -144,16 +151,13 @@ export const saveProduct = async (product: Product, isNew: boolean, skipLocal: b
     }
     if (error) throw error;
   } catch (e) {
-    // 2. Se falhar e não for apenas atualização local de sync, põe na fila
     if (!skipLocal) {
-        console.warn("Falha ao salvar produto remoto, adicionando à fila.", e);
         addToSyncQueue({ type: 'PRODUCT', action: 'SAVE', payload: product, isNew, id: product.id });
     }
-    // NOTA: Não damos throw aqui para permitir que a execução continue e salve localmente
   } 
   
-  // 3. Salva localmente (Sempre, a menos que skipLocal seja true)
   if (!skipLocal) {
+    // Atualiza Cache Local Imediatamente
     const localProducts = JSON.parse(localStorage.getItem(LS_PRODUCTS) || '[]');
     let newProducts = [...localProducts];
     const idx = newProducts.findIndex(p => p.id === product.id);
@@ -176,7 +180,7 @@ export const fetchMovements = async (): Promise<Movement[]> => {
     
     if (error) throw error;
     
-    const formatted = data.map((m: any) => ({
+    let formatted: Movement[] = data.map((m: any) => ({
         id: m.id,
         date: m.created_at,
         prodId: m.prod_id,
@@ -185,6 +189,17 @@ export const fetchMovements = async (): Promise<Movement[]> => {
         obs: m.obs,
         matricula: m.matricula
     }));
+
+    // UI OTIMISTA: Adiciona movimentos que estão na fila esperando sync
+    const queue = getQueue();
+    const pendingMovements = queue
+        .filter(i => i.type === 'MOVEMENT')
+        .map(i => i.payload as Movement)
+        // Evita duplicar se por acaso o banco já retornou o item (comparando ID ou timestamp prox)
+        .filter(pm => !formatted.some(fm => fm.id === pm.id));
+    
+    // Coloca os pendentes no topo
+    formatted = [...pendingMovements, ...formatted];
     
     localStorage.setItem(LS_MOVEMENTS, JSON.stringify(formatted));
     return formatted;
@@ -207,7 +222,6 @@ export const saveMovement = async (movement: Movement, skipLocal: boolean = fals
     if (error) throw error;
   } catch (e) {
     if (!skipLocal) {
-        console.warn("Falha ao salvar movimento remoto, adicionando à fila.", e);
         addToSyncQueue({ type: 'MOVEMENT', action: 'SAVE', payload: movement, id: movement.id });
     }
   } 
@@ -226,7 +240,6 @@ export const deleteAllMovements = async (): Promise<void> => {
     } catch (e) {
         console.error("Erro ao apagar histórico remoto", e);
     }
-    // Sempre apaga local
     localStorage.removeItem(LS_MOVEMENTS);
 };
 
@@ -241,28 +254,23 @@ export const fetchOrders = async (): Promise<Order[]> => {
     
     if (error) throw error;
     
+    // Lógica auxiliar para mapear itens (igual ao anterior)
     const localOrdersStr = localStorage.getItem(LS_ORDERS);
     const localOrders: Order[] = localOrdersStr ? JSON.parse(localOrdersStr) : [];
     const localMap = new Map(localOrders.map(o => [o.id, o]));
-
     const localProductsStr = localStorage.getItem(LS_PRODUCTS);
     const productsList: Product[] = localProductsStr ? JSON.parse(localProductsStr) : [];
-    
     const productMap = new Map<string, string>();
-    productsList.forEach(p => {
-        if(p.id) productMap.set(String(p.id).trim(), p.name);
-    });
+    productsList.forEach(p => { if(p.id) productMap.set(String(p.id).trim(), p.name); });
 
-    const formatted: Order[] = data.map((o: any) => {
+    let formatted: Order[] = data.map((o: any) => {
         const localOrder = localMap.get(o.id);
-        
         const items: OrderItem[] = (o.order_items || []).map((item: any) => {
             const rawSku = item.sku ?? item.product_id ?? item.id;
             const sku = rawSku ? String(rawSku).trim() : 'N/A';
             const catalogName = productMap.get(sku);
             const pName = catalogName || item.product_name || `Produto SKU: ${sku}`;
             const localItem = localOrder?.items.find((li: OrderItem) => String(li.productId).trim() === sku);
-            
             return {
                 productId: sku,
                 productName: pName,
@@ -270,17 +278,14 @@ export const fetchOrders = async (): Promise<Order[]> => {
                 qtyPicked: localItem ? localItem.qtyPicked : 0 
             };
         });
-
         const paymentInfo = (o.payment_method || '').replace(/_/g, ' ');
         let last4 = o.card_last_digits || o.card_last4 || o.last4 || o.last_4 || o.card_last_four || o.card_digits;
-
         if (!last4 && o.card_number) {
             const nums = String(o.card_number).replace(/\D/g, '');
             if(nums.length >= 4) last4 = nums.slice(-4);
         } else if (!last4 && typeof o.payment_details === 'object' && o.payment_details?.last4) {
             last4 = o.payment_details.last4;
         }
-
         return {
             id: o.id,
             orderNumber: o.ticket_number ? o.ticket_number.toString() : (o.order_number || 'SEM-NUM'),
@@ -299,6 +304,30 @@ export const fetchOrders = async (): Promise<Order[]> => {
         };
     });
     
+    // UI OTIMISTA PARA PEDIDOS
+    const queue = getQueue();
+    
+    // 1. Aplica Updates/Inserts que estão na fila
+    const pendingSaves = queue.filter(i => i.type === 'ORDER');
+    pendingSaves.forEach(item => {
+        const payload = item.payload as Order;
+        const idx = formatted.findIndex(o => o.id === payload.id);
+        if (idx !== -1) {
+            // Mantém algumas props calculadas se necessário, ou sobrescreve tudo
+            formatted[idx] = { ...formatted[idx], ...payload };
+        } else {
+            formatted.unshift(payload);
+        }
+    });
+
+    // 2. Aplica Deletes que estão na fila
+    // Isso resolve o problema de "clico excluir e não acontece nada"
+    // pois removemos o item da lista visualmente mesmo que o banco ainda tenha ele.
+    const pendingDeletes = queue.filter(i => i.type === 'DELETE_ORDER').map(i => i.id);
+    if (pendingDeletes.length > 0) {
+        formatted = formatted.filter(o => !pendingDeletes.includes(o.id));
+    }
+
     localStorage.setItem(LS_ORDERS, JSON.stringify(formatted));
     return formatted;
   } catch (e) {
@@ -320,14 +349,9 @@ export const saveOrder = async (order: Order, isNew: boolean, skipLocal: boolean
         card_last_digits: order.cardLast4,
         whatsapp: order.whatsapp,
     };
-
     if (isNew) {
-      const { error: orderError } = await supabaseOrders
-        .from('orders')
-        .insert([{ ...orderPayload, id: order.id }]);
-      
+      const { error: orderError } = await supabaseOrders.from('orders').insert([{ ...orderPayload, id: order.id }]);
       if (orderError) throw orderError;
-
       if (order.items.length > 0) {
           const itemsPayload = order.items.map(item => ({
               order_id: order.id,
@@ -336,27 +360,20 @@ export const saveOrder = async (order: Order, isNew: boolean, skipLocal: boolean
               quantity: item.qtyRequested,
               sku: item.productId
           }));
-          const { error: itemsError } = await supabaseOrders
-            .from('order_items')
-            .insert(itemsPayload);
+          const { error: itemsError } = await supabaseOrders.from('order_items').insert(itemsPayload);
           if (itemsError) throw itemsError;
       }
     } else {
-      ({ error } = await supabaseOrders
-        .from('orders')
-        .update({ 
+      ({ error } = await supabaseOrders.from('orders').update({ 
             status: order.status,
             payment_method: order.paymentMethod,
             card_last_digits: order.cardLast4,
             whatsapp: order.whatsapp
-        }) 
-        .eq('id', order.id));
+        }).eq('id', order.id));
     }
-    
     if (error) throw error;
   } catch (e) {
     if (!skipLocal) {
-        console.warn("Falha ao salvar pedido remoto, adicionando à fila.", e);
         addToSyncQueue({ type: 'ORDER', action: 'SAVE', payload: order, isNew, id: order.id });
     }
   } 
@@ -365,11 +382,8 @@ export const saveOrder = async (order: Order, isNew: boolean, skipLocal: boolean
     const localOrders = JSON.parse(localStorage.getItem(LS_ORDERS) || '[]');
     let newOrders = [...localOrders];
     const idx = newOrders.findIndex(o => o.id === order.id);
-    if (idx !== -1) {
-        newOrders[idx] = order;
-    } else {
-        newOrders.unshift(order);
-    }
+    if (idx !== -1) newOrders[idx] = order;
+    else newOrders.unshift(order);
     localStorage.setItem(LS_ORDERS, JSON.stringify(newOrders));
   }
 };
@@ -380,7 +394,6 @@ export const deleteOrder = async (id: string, skipLocal: boolean = false): Promi
         if (error) throw error;
     } catch (e) {
         if (!skipLocal) {
-            console.warn("Falha ao deletar pedido remoto, adicionando à fila.", e);
             addToSyncQueue({ type: 'DELETE_ORDER', action: 'DELETE', payload: id, id: id });
         }
     } 
