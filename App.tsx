@@ -19,7 +19,7 @@ const App: React.FC = () => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
-  const [pendingSyncs, setPendingSyncs] = useState(0);
+  // pendingSyncs removed
   const [search, setSearch] = useState('');
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
@@ -77,7 +77,6 @@ const App: React.FC = () => {
   };
 
   const refreshData = useCallback(async () => {
-    // Carregamento silencioso se já houver dados, para não travar a UI
     const isFirstLoad = products.length === 0 && orders.length === 0;
     if (isFirstLoad) setIsLoading(true);
     
@@ -88,7 +87,6 @@ const App: React.FC = () => {
       setProducts(prods);
       setMovements(movs);
       setOrders(ords);
-      setPendingSyncs(storage.getPendingSyncCount());
     } catch (e) {
       console.error(e);
       if(isFirstLoad) addToast('error', 'Erro ao carregar dados.');
@@ -96,21 +94,6 @@ const App: React.FC = () => {
       setIsLoading(false);
     }
   }, [products.length, orders.length]);
-
-  const handleSync = async () => {
-      setIsLoading(true);
-      try {
-          const res = await storage.processSyncQueue();
-          if (res) {
-            addToast('info', res);
-          }
-          await refreshData();
-      } catch (e) {
-          addToast('error', 'Falha na sincronização.');
-      } finally {
-          setIsLoading(false);
-      }
-  };
 
   const handleTestConnection = async () => {
       setIsLoading(true);
@@ -132,11 +115,10 @@ const App: React.FC = () => {
   useEffect(() => {
     storage.initDatabase();
     refreshData();
-    const handleOnline = () => { setIsOnline(true); handleSync(); };
+    const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    if (navigator.onLine) handleSync();
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -144,15 +126,15 @@ const App: React.FC = () => {
   }, [refreshData]);
 
   const handleClearHistory = async () => {
-      if (window.confirm('Deseja limpar o histórico?')) {
+      if (window.confirm('Deseja limpar o histórico (BANCO DE DADOS)?')) {
           setIsLoading(true);
           try {
               await storage.deleteAllMovements();
-              setMovements([]); // UI Optmistic
+              setMovements([]); 
               await refreshData();
-              addToast('success', 'Histórico apagado.');
+              addToast('success', 'Histórico apagado do banco.');
           } catch (e: any) {
-              addToast('error', 'Erro ao apagar.');
+              addToast('error', 'Erro ao apagar. Verifique conexão.');
           } finally {
               setIsLoading(false);
           }
@@ -167,15 +149,16 @@ const App: React.FC = () => {
     setIsLoading(true);
     try {
       const qty = parseInt(newProdForm.qty) || 0;
+      // Salva direto no banco
       await storage.saveProduct({ id: newProdForm.id, name: newProdForm.name, qty }, true);
       await refreshData();
       setShowAddProduct(false);
       setNewProdForm({ id: '', name: '', qty: '' });
-      addToast('success', 'Produto salvo.');
+      addToast('success', 'Produto salvo no banco!');
     } catch (e: any) {
-      addToast('info', 'Salvo localmente.');
-      refreshData();
-      setShowAddProduct(false);
+      // Se falhar, avisa erro
+      addToast('error', 'Erro ao salvar. Tente novamente.');
+      console.error(e);
     } finally {
       setIsLoading(false);
     }
@@ -197,7 +180,7 @@ const App: React.FC = () => {
         return;
     }
 
-    // UI OTIMISTA: Atualiza estado IMEDIATAMENTE antes de chamar o storage
+    // UI OTIMISTA: Atualiza estado visualmente
     const newQty = selectedProduct.qty + finalQtyDelta;
     const updatedProd = { ...selectedProduct, qty: newQty };
     const newMovement = {
@@ -210,23 +193,23 @@ const App: React.FC = () => {
         matricula: baixaForm.matricula
     };
 
-    // Atualiza React State
     setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
     setMovements(prev => [newMovement, ...prev]);
     
     setShowBaixa(false);
     setSelectedProduct(null);
     setBaixaForm({ qty: 1, obs: '', matricula: '' }); 
-    addToast('success', 'Estoque atualizado.');
+    addToast('info', 'Enviando para o banco...');
 
     try {
+      // Envia para o banco
       await storage.saveProduct(updatedProd, false);
       await storage.saveMovement(newMovement);
-      // Opcional: Chama refresh silencioso para garantir consistência
+      addToast('success', 'Confirmado no Banco!');
       refreshData();
     } catch (e: any) {
-      // Se falhar, o storage já cuidou de salvar localmente, então a UI está correta.
-      console.error(e);
+      addToast('error', 'Erro de conexão. A operação não foi salva.');
+      refreshData(); // Reverte UI para o estado real do banco
     }
   };
 
@@ -272,13 +255,14 @@ const App: React.FC = () => {
           }
           
           setShowOrderForm(false);
-          addToast('success', 'Pedido salvo!');
-
+          
+          // Salva no Banco
           await storage.saveOrder(orderToSave, isNew);
+          addToast('success', 'Pedido salvo no banco!');
           await refreshData();
       } catch (e: any) {
-          addToast('info', 'Salvo localmente.');
-          refreshData();
+          addToast('error', 'Erro ao salvar pedido.');
+          refreshData(); // Reverte
       } finally {
           setIsLoading(false);
       }
@@ -296,7 +280,6 @@ const App: React.FC = () => {
         const newStatus: 'pending' | 'completed' = (allPicked && hasShipping) ? 'completed' : 'pending';
         updatedOrder.status = newStatus;
 
-        // UI Otimista
         setOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
 
         await storage.saveOrder(updatedOrder, false);
@@ -313,9 +296,9 @@ const App: React.FC = () => {
             await storage.saveMovement(autoMov);
         }
         await refreshData();
-        addToast('success', 'Status atualizado!');
+        addToast('success', 'Status atualizado no banco!');
     } catch (e: any) {
-        addToast('info', 'Status alterado localmente.');
+        addToast('error', 'Erro ao atualizar status.');
         refreshData();
     } finally {
         setIsLoading(false);
@@ -323,18 +306,19 @@ const App: React.FC = () => {
   };
 
   const handleDeleteOrder = async (id: string) => {
-      if(!window.confirm('Excluir pedido definitivamente?')) return;
+      if(!window.confirm('Excluir pedido definitivamente do BANCO DE DADOS?')) return;
       
-      // UI OTIMISTA: Remove visualmente ANTES de chamar o backend
+      // UI OTIMISTA
       setOrders(prev => prev.filter(o => o.id !== id));
-      addToast('success', 'Pedido excluído.');
 
       try {
           await storage.deleteOrder(id);
-          // Chama refresh em background para garantir sync
-          refreshData();
+          addToast('success', 'Pedido excluído do banco.');
+          await refreshData();
       } catch (e: any) {
           console.error(e);
+          addToast('error', 'Erro ao excluir do banco.');
+          refreshData(); // Traz de volta se falhou
       }
   };
 
@@ -386,7 +370,6 @@ const App: React.FC = () => {
 
       if(!silent && !window.confirm(`Confirmar separação de ${item.productName}?`)) return;
 
-      // Optimistic UI updates
       const newProdQty = productInStock.qty - 1;
       const updatedProd = { ...productInStock, qty: newProdQty };
       const updatedItems = selectedOrder.items.map(i => 
@@ -394,10 +377,11 @@ const App: React.FC = () => {
       );
       const updatedOrder: Order = { ...selectedOrder, items: updatedItems, status: 'pending' };
 
+      // Optimistic UI
       setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
       setOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
-      setSelectedOrder(updatedOrder); // Update Modal View
-      addToast('success', `Item separado.`);
+      setSelectedOrder(updatedOrder); 
+      addToast('info', 'Salvando...');
 
       try {
           await storage.saveProduct(updatedProd, false);
@@ -411,9 +395,12 @@ const App: React.FC = () => {
               matricula: selectedOrder.matricula
           });
           await storage.saveOrder(updatedOrder, false);
+          addToast('success', 'Separado!');
           await refreshData(); 
       } catch (e: any) {
          console.error(e);
+         addToast('error', 'Erro ao salvar separação.');
+         refreshData(); // Revert
       }
   };
 
@@ -457,7 +444,7 @@ const App: React.FC = () => {
               }
               for (const order of newOrdersMap.values()) await storage.saveOrder(order, true);
               await refreshData();
-              addToast('success', `${newOrdersMap.size} pedidos importados!`);
+              addToast('success', `${newOrdersMap.size} pedidos importados para o banco!`);
               setShowImport(false);
           } catch (err: any) {
               addToast('error', 'Falha ao processar CSV.');
@@ -555,11 +542,6 @@ const App: React.FC = () => {
         <div className="flex gap-2">
             <button onClick={refreshData} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition relative">
                 <RefreshCw size={18} className={isLoading ? "animate-spin" : ""} />
-                {pendingSyncs > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-orange-500 text-[8px] font-black w-4 h-4 rounded-full flex items-center justify-center border-2 border-qq-green">
-                    {pendingSyncs}
-                  </span>
-                )}
             </button>
             <button onClick={() => setShowExport(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition">
                 <FileText size={18} />
@@ -794,21 +776,21 @@ const App: React.FC = () => {
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
                 <div className="flex items-center gap-3 mb-6">
                     <Database size={24} className="text-qq-green" />
-                    <h3 className="text-xl font-bold text-slate-800">Sincronização</h3>
+                    <h3 className="text-xl font-bold text-slate-800">Conexão</h3>
                 </div>
                 <div className={`p-4 rounded-xl border flex items-center gap-3 ${isOnline ? 'bg-green-50 border-green-200' : 'bg-orange-50 border-orange-200'}`}>
                     <div className={`w-3 h-3 rounded-full ${isOnline ? 'bg-green-500' : 'bg-orange-500'}`}></div>
-                    <p className="font-bold text-slate-800">{isOnline ? 'Sincronizado com a Nuvem' : 'Trabalhando em Modo Offline'}</p>
+                    <p className="font-bold text-slate-800">{isOnline ? 'Conectado ao Banco' : 'Sem Internet'}</p>
                 </div>
                 <p className="mt-4 text-xs text-slate-500 leading-relaxed">
-                    Sincronização em tempo real ativada. Se você realizar alterações offline, elas serão enviadas assim que a conexão for restaurada.
+                    Este aplicativo opera diretamente no banco de dados. Você precisa de internet para salvar alterações.
                 </p>
                 <div className="mt-6 flex flex-col gap-3">
                     <button onClick={handleTestConnection} className="bg-blue-50 text-blue-700 py-3 rounded-xl font-bold flex items-center justify-center gap-2 border border-blue-100 hover:bg-blue-100 transition">
                         <Activity size={18} /> Testar Conexão
                     </button>
                     <button onClick={() => { refreshData(); setShowSettings(false); }} className="bg-qq-green text-white py-3 rounded-xl font-bold flex items-center justify-center gap-2">
-                        <RefreshCw size={18} /> Forçar Sincronismo
+                        <RefreshCw size={18} /> Atualizar Dados
                     </button>
                     <button onClick={() => setShowSettings(false)} className="bg-slate-100 text-slate-700 py-3 rounded-xl font-bold">Fechar</button>
                 </div>
@@ -816,6 +798,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Restante dos modais mantidos inalterados, apenas re-renderizados pelo componente */}
       {showAddProduct && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
@@ -827,7 +810,7 @@ const App: React.FC = () => {
                 </div>
                 <div className="flex gap-3 mt-6">
                     <button onClick={() => setShowAddProduct(false)} className="flex-1 bg-slate-100 py-3 rounded-xl font-bold">Cancelar</button>
-                    <button onClick={handleSaveProduct} className="flex-1 bg-qq-green text-white py-3 rounded-xl font-bold">Salvar</button>
+                    <button onClick={handleSaveProduct} className="flex-1 bg-qq-green text-white py-3 rounded-xl font-bold">Salvar no Banco</button>
                 </div>
             </div>
         </div>
@@ -906,7 +889,7 @@ const App: React.FC = () => {
                       </div>
                   </div>
                   <button onClick={handleSaveOrder} className="w-full bg-qq-green text-white py-3 rounded-xl font-bold mt-4 flex items-center justify-center gap-2">
-                      <Save size={18} /> Salvar Pedido
+                      <Save size={18} /> Salvar Pedido no Banco
                   </button>
               </div>
           </div>
