@@ -354,6 +354,11 @@ const App: React.FC = () => {
   };
 
   const handleDeleteOrder = async (id: string) => {
+      // TESTE FORÇADO
+      console.error('🚨🚨🚨 handleDeleteOrder FOI CHAMADO! 🚨🚨🚨');
+      console.error('ID:', id);
+      alert('handleDeleteOrder chamado com ID: ' + id);
+      
       console.log('═══════════════════════════════════════');
       console.log('🗑️ handleDeleteOrder CHAMADO!');
       console.log('🆔 ID recebido:', id);
@@ -362,6 +367,7 @@ const App: React.FC = () => {
       
       if(!window.confirm('Excluir pedido definitivamente do BANCO DE DADOS?')) {
           console.log('❌ Usuário cancelou a exclusão');
+          alert('Exclusão cancelada pelo usuário');
           return;
       }
       
@@ -780,17 +786,28 @@ const App: React.FC = () => {
                                           <button onClick={() => openEditOrder(order)} className="p-2 text-slate-400 hover:text-qq-green transition" aria-label={`Editar pedido ${order.orderNumber}`}><Edit size={18} /></button>
                                           <button 
                                             onClick={(e) => {
+                                              e.preventDefault();
                                               e.stopPropagation();
+                                              
+                                              // TESTE FORÇADO - deve aparecer SEMPRE
+                                              alert(`TESTE: Excluindo pedido ${order.orderNumber} (ID: ${order.id})`);
+                                              
                                               console.log('═══════════════════════════════════════');
                                               console.log('🔘 BOTÃO EXCLUIR CLICADO!');
                                               console.log('📋 Pedido:', order.orderNumber);
                                               console.log('🆔 ID:', order.id);
-                                              console.log('📦 Objeto completo:', order);
+                                              console.log('📦 Objeto completo:', JSON.stringify(order, null, 2));
                                               console.log('═══════════════════════════════════════');
-                                              handleDeleteOrder(order.id);
+                                              
+                                              // Chama a função de exclusão
+                                              handleDeleteOrder(order.id).catch(err => {
+                                                  console.error('ERRO CAPTURADO NO BOTÃO:', err);
+                                                  alert('Erro ao excluir: ' + err.message);
+                                              });
                                             }} 
                                             className="p-2 text-slate-400 hover:text-red-500 transition" 
                                             aria-label={`Excluir pedido ${order.orderNumber}`}
+                                            type="button"
                                           >
                                             <Trash2 size={18} />
                                           </button>
