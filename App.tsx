@@ -354,21 +354,58 @@ const App: React.FC = () => {
   };
 
   const handleDeleteOrder = async (id: string) => {
-      if(!window.confirm('Excluir pedido definitivamente do BANCO DE DADOS?')) return;
+      if(!window.confirm('Excluir pedido definitivamente do BANCO DE DADOS?')) {
+          console.log('❌ Usuário cancelou a exclusão');
+          return;
+      }
       
       setIsLoading(true);
-      // UI OTIMISTA
-      setOrders(prev => prev.filter(o => o.id !== id));
-
+      console.log('🗑️ Iniciando exclusão do pedido ID:', id);
+      console.log('📋 Pedido antes da exclusão:', orders.find(o => o.id === id));
+      
+      // NÃO faz UI otimista - espera confirmação do banco primeiro
       try {
           await storage.deleteOrder(id);
+          console.log('✅ Pedido excluído com sucesso no banco');
+          
+          // Remove da UI imediatamente após sucesso
+          setOrders(prev => {
+              const filtered = prev.filter(o => o.id !== id);
+              console.log('🔄 Estado atualizado. Pedidos restantes:', filtered.length);
+              return filtered;
+          });
+          
           addToast('success', 'Pedido excluído do banco.');
+          
+          // Aguarda um pouco antes de recarregar para garantir que o banco processou
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          // Recarrega dados para garantir sincronização
+          console.log('🔄 Recarregando dados do banco...');
           await refreshData();
+          
+          // Verifica se o pedido ainda existe após refresh
+          setTimeout(() => {
+              const stillExists = orders.find(o => o.id === id);
+              if (stillExists) {
+                  console.error('⚠️ ATENÇÃO: Pedido ainda existe após exclusão!', stillExists);
+                  addToast('error', 'Pedido não foi excluído. Verifique o console para detalhes.');
+              } else {
+                  console.log('✅ Confirmado: Pedido não existe mais na lista');
+              }
+          }, 1000);
       } catch (e: unknown) {
           const errorMessage = e instanceof Error ? e.message : 'Erro desconhecido';
-          console.error('Erro ao excluir pedido:', e);
+          console.error('❌ Erro ao excluir pedido:', e);
+          console.error('Detalhes do erro:', {
+              id,
+              error: e,
+              message: errorMessage,
+              stack: e instanceof Error ? e.stack : undefined
+          });
           addToast('error', `Erro ao excluir: ${errorMessage}`);
-          await refreshData(); // Traz de volta se falhou
+          // Recarrega para mostrar estado real
+          await refreshData();
       } finally {
           setIsLoading(false);
       }
@@ -735,7 +772,17 @@ const App: React.FC = () => {
                                       </div>
                                       <div className="flex gap-1 flex-col">
                                           <button onClick={() => openEditOrder(order)} className="p-2 text-slate-400 hover:text-qq-green transition" aria-label={`Editar pedido ${order.orderNumber}`}><Edit size={18} /></button>
-                                          <button onClick={() => handleDeleteOrder(order.id)} className="p-2 text-slate-400 hover:text-red-500 transition" aria-label={`Excluir pedido ${order.orderNumber}`}><Trash2 size={18} /></button>
+                                          <button 
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              console.log('🔘 Botão excluir clicado para pedido:', order.id, order.orderNumber);
+                                              handleDeleteOrder(order.id);
+                                            }} 
+                                            className="p-2 text-slate-400 hover:text-red-500 transition" 
+                                            aria-label={`Excluir pedido ${order.orderNumber}`}
+                                          >
+                                            <Trash2 size={18} />
+                                          </button>
                                       </div>
                                   </div>
                                   <div onClick={() => openPicking(order)} className="mt-3 cursor-pointer group">

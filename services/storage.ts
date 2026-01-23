@@ -298,20 +298,84 @@ export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => 
 export const deleteOrder = async (id: string): Promise<void> => {
     // SOMENTE BANCO DE DADOS
     if (!supabaseOrders) {
+        console.error('❌ Supabase Orders não inicializado');
         throw new Error('Conexão com banco de pedidos não inicializada');
     }
     
-    // 1. Apaga itens relacionados primeiro
-    const { error: itemsError } = await supabaseOrders.from('order_items').delete().eq('order_id', id);
-    if (itemsError) {
-        console.error('Erro ao deletar itens do pedido:', itemsError);
-        // Continua mesmo se não houver itens para deletar (pode não existir)
+    if (!id || id.trim() === '') {
+        throw new Error('ID do pedido não pode ser vazio');
     }
     
-    // 2. Apaga o pedido
-    const { error } = await supabaseOrders.from('orders').delete().eq('id', id);
-    if (error) {
-        console.error('Erro ao deletar pedido:', error);
-        throw new Error(`Falha ao excluir pedido: ${error.message}`);
+    console.log('🔍 Tentando deletar pedido ID:', id);
+    console.log('🔍 Tipo do ID:', typeof id);
+    console.log('🔍 ID length:', id.length);
+    
+    // 1. Apaga itens relacionados primeiro
+    console.log('🗑️ Deletando itens do pedido...');
+    const { data: deletedItems, error: itemsError } = await supabaseOrders
+        .from('order_items')
+        .delete()
+        .eq('order_id', id)
+        .select();
+    
+    if (itemsError) {
+        console.error('❌ Erro ao deletar itens do pedido:', itemsError);
+        console.error('Detalhes:', {
+            code: itemsError.code,
+            message: itemsError.message,
+            details: itemsError.details,
+            hint: itemsError.hint
+        });
+        // Continua mesmo se não houver itens para deletar (pode não existir)
+    } else {
+        console.log('✅ Itens deletados:', deletedItems?.length || 0);
     }
+    
+    // 2. Verifica se o pedido existe antes de deletar
+    console.log('🔍 Verificando se pedido existe...');
+    const { data: existingOrder, error: checkError } = await supabaseOrders
+        .from('orders')
+        .select('id, ticket_number, full_name')
+        .eq('id', id)
+        .single();
+    
+    if (checkError && checkError.code !== 'PGRST116') { // PGRST116 = não encontrado
+        console.error('❌ Erro ao verificar pedido:', checkError);
+        throw new Error(`Erro ao verificar pedido: ${checkError.message}`);
+    }
+    
+    if (!existingOrder) {
+        console.warn('⚠️ Pedido não encontrado no banco. ID:', id);
+        throw new Error(`Pedido com ID ${id} não encontrado no banco de dados`);
+    }
+    
+    console.log('✅ Pedido encontrado:', existingOrder);
+    
+    // 3. Apaga o pedido
+    console.log('🗑️ Deletando pedido...');
+    const { data: deletedOrder, error } = await supabaseOrders
+        .from('orders')
+        .delete()
+        .eq('id', id)
+        .select();
+    
+    if (error) {
+        console.error('❌ Erro ao deletar pedido:', error);
+        console.error('Detalhes completos:', {
+            code: error.code,
+            message: error.message,
+            details: error.details,
+            hint: error.hint,
+            id_usado: id,
+            pedido_encontrado: existingOrder
+        });
+        throw new Error(`Falha ao excluir pedido: ${error.message} (Código: ${error.code})`);
+    }
+    
+    if (!deletedOrder || deletedOrder.length === 0) {
+        console.warn('⚠️ Nenhum pedido foi deletado, mas existia antes. ID:', id);
+        throw new Error(`Falha ao excluir pedido: Nenhum registro foi deletado`);
+    }
+    
+    console.log('✅ Pedido deletado com sucesso:', deletedOrder);
 };
