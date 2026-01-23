@@ -224,16 +224,20 @@ export const fetchOrders = async (): Promise<Order[]> => {
 
 export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => {
     // SOMENTE BANCO DE DADOS
+    if (!supabaseOrders) {
+        throw new Error('Conexão com banco de pedidos não inicializada');
+    }
     let error;
     const orderPayload = {
         ticket_number: parseInt(order.orderNumber) || 0,
         full_name: order.customerName,
-        matricula: order.matricula,
-        segmento: order.filial, 
+        matricula: order.matricula || '',
+        segmento: order.filial || '', 
         status: order.status,
-        payment_method: order.paymentMethod,
-        card_last_digits: order.cardLast4,
-        whatsapp: order.whatsapp,
+        payment_method: order.paymentMethod || '',
+        card_last_digits: order.cardLast4 || '',
+        whatsapp: order.whatsapp || '',
+        obs: order.obs || '',
     };
     
     if (isNew) {
@@ -253,20 +257,28 @@ export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => 
           if (itemsError) throw itemsError;
       }
     } else {
+      // ATUALIZA TODOS OS CAMPOS DO PEDIDO
       ({ error } = await supabaseOrders.from('orders').update({ 
+            ticket_number: parseInt(order.orderNumber) || 0,
+            full_name: order.customerName,
+            matricula: order.matricula || '',
+            segmento: order.filial || '',
             status: order.status,
-            payment_method: order.paymentMethod,
-            card_last_digits: order.cardLast4,
-            whatsapp: order.whatsapp
+            payment_method: order.paymentMethod || '',
+            card_last_digits: order.cardLast4 || '',
+            whatsapp: order.whatsapp || '',
+            obs: order.obs || '',
+            created_at: order.date || new Date().toISOString()
         }).eq('id', order.id));
       if (error) throw error;
       
-      // Atualiza os itens do pedido, incluindo qtyPicked
+      // SEMPRE atualiza os itens do pedido (deleta todos e reinsere)
+      // Primeiro, apaga TODOS os itens existentes
+      const { error: deleteError } = await supabaseOrders.from('order_items').delete().eq('order_id', order.id);
+      if (deleteError) throw deleteError;
+      
+      // Depois, insere os itens atualizados (se houver)
       if (order.items.length > 0) {
-          // Primeiro, apaga os itens existentes
-          await supabaseOrders.from('order_items').delete().eq('order_id', order.id);
-          
-          // Depois, insere os itens atualizados
           const itemsPayload = order.items.map(item => ({
               order_id: order.id,
               product_id: item.productId,
@@ -285,10 +297,21 @@ export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => 
 
 export const deleteOrder = async (id: string): Promise<void> => {
     // SOMENTE BANCO DE DADOS
-    // 1. Apaga itens relacionados
-    await supabaseOrders.from('order_items').delete().eq('order_id', id);
+    if (!supabaseOrders) {
+        throw new Error('Conexão com banco de pedidos não inicializada');
+    }
+    
+    // 1. Apaga itens relacionados primeiro
+    const { error: itemsError } = await supabaseOrders.from('order_items').delete().eq('order_id', id);
+    if (itemsError) {
+        console.error('Erro ao deletar itens do pedido:', itemsError);
+        // Continua mesmo se não houver itens para deletar (pode não existir)
+    }
+    
     // 2. Apaga o pedido
     const { error } = await supabaseOrders.from('orders').delete().eq('id', id);
-    
-    if (error) throw error;
+    if (error) {
+        console.error('Erro ao deletar pedido:', error);
+        throw new Error(`Falha ao excluir pedido: ${error.message}`);
+    }
 };

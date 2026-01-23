@@ -356,6 +356,7 @@ const App: React.FC = () => {
   const handleDeleteOrder = async (id: string) => {
       if(!window.confirm('Excluir pedido definitivamente do BANCO DE DADOS?')) return;
       
+      setIsLoading(true);
       // UI OTIMISTA
       setOrders(prev => prev.filter(o => o.id !== id));
 
@@ -367,7 +368,9 @@ const App: React.FC = () => {
           const errorMessage = e instanceof Error ? e.message : 'Erro desconhecido';
           console.error('Erro ao excluir pedido:', e);
           addToast('error', `Erro ao excluir: ${errorMessage}`);
-          refreshData(); // Traz de volta se falhou
+          await refreshData(); // Traz de volta se falhou
+      } finally {
+          setIsLoading(false);
       }
   };
 
@@ -960,6 +963,10 @@ const App: React.FC = () => {
                                   </div>
                               </div>
                           ))}
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-slate-500 font-bold ml-1 uppercase">Observações (opcional)</label>
+                        <textarea value={orderForm.obs || ''} onChange={e => setOrderForm({...orderForm, obs: e.target.value})} rows={2} className="w-full bg-slate-50 border-2 rounded-xl p-2 text-sm outline-none resize-none" placeholder="Observações sobre o pedido..." />
                       </div>
                   </div>
                   <button onClick={handleSaveOrder} className="w-full bg-qq-green text-white py-3 rounded-xl font-bold mt-4 flex items-center justify-center gap-2">
