@@ -354,6 +354,12 @@ const App: React.FC = () => {
   };
 
   const handleDeleteOrder = async (id: string) => {
+      console.log('═══════════════════════════════════════');
+      console.log('🗑️ handleDeleteOrder CHAMADO!');
+      console.log('🆔 ID recebido:', id);
+      console.log('📋 Tipo:', typeof id);
+      console.log('═══════════════════════════════════════');
+      
       if(!window.confirm('Excluir pedido definitivamente do BANCO DE DADOS?')) {
           console.log('❌ Usuário cancelou a exclusão');
           return;
@@ -775,7 +781,12 @@ const App: React.FC = () => {
                                           <button 
                                             onClick={(e) => {
                                               e.stopPropagation();
-                                              console.log('🔘 Botão excluir clicado para pedido:', order.id, order.orderNumber);
+                                              console.log('═══════════════════════════════════════');
+                                              console.log('🔘 BOTÃO EXCLUIR CLICADO!');
+                                              console.log('📋 Pedido:', order.orderNumber);
+                                              console.log('🆔 ID:', order.id);
+                                              console.log('📦 Objeto completo:', order);
+                                              console.log('═══════════════════════════════════════');
                                               handleDeleteOrder(order.id);
                                             }} 
                                             className="p-2 text-slate-400 hover:text-red-500 transition" 

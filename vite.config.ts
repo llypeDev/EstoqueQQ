@@ -6,5 +6,8 @@ export default defineConfig({
   plugins: [react()],
   build: {
     outDir: 'dist',
-  }
+  },
+  publicDir: 'public',
+  // Garante que sw.js seja copiado para o build
+  assetsInclude: ['**/*.js', '**/*.json']
 })

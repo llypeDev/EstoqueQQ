@@ -9,11 +9,15 @@
     <link rel="manifest" href="./manifest.json">
     <meta name="theme-color" content="#008f4c">
     <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Estoque">
     <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3757/3757879.png">
+    <link rel="icon" type="image/png" href="https://cdn-icons-png.flaticon.com/512/3757/3757879.png">
 
+    <!-- Tailwind CSS via CDN (apenas para desenvolvimento) -->
     <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Nota: Em produção, considere usar Tailwind via PostCSS -->
     <script>
         tailwind.config = {
             theme: {
@@ -68,12 +72,26 @@
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./sw.js')
+          // Tenta registrar o service worker, mas não mostra erro se não existir
+          fetch('./sw.js')
+            .then(response => {
+              if (response.ok) {
+                return navigator.serviceWorker.register('./sw.js');
+              } else {
+                console.log('Service Worker não encontrado, continuando sem cache offline');
+                return null;
+              }
+            })
             .then(registration => {
-              console.log('SW registered: ', registration);
+              if (registration) {
+                console.log('SW registered: ', registration);
+              }
             })
             .catch(registrationError => {
-              console.log('SW registration failed: ', registrationError);
+              // Silencia erro se o arquivo não existir (normal em desenvolvimento)
+              if (registrationError.message && !registrationError.message.includes('404')) {
+                console.warn('SW registration failed: ', registrationError);
+              }
             });
         });
       }
