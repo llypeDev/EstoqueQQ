@@ -51,7 +51,6 @@ export const testConnection = async (): Promise<{inventory: boolean, orders: boo
 const addToSyncQueue = (item: Omit<SyncItem, 'timestamp'>) => {
   const queueJson = localStorage.getItem(LS_SYNC_QUEUE);
   const queue: SyncItem[] = queueJson ? JSON.parse(queueJson) : [];
-  // Remove itens duplicados se for UPDATE/DELETE do mesmo ID para evitar redundância
   const filteredQueue = queue.filter(q => !(q.id === item.id && q.type === item.type));
   filteredQueue.push({ ...item, timestamp: Date.now() });
   localStorage.setItem(LS_SYNC_QUEUE, JSON.stringify(filteredQueue));
@@ -105,7 +104,6 @@ export const processSyncQueue = async (): Promise<string | null> => {
 
 export const fetchProducts = async (): Promise<Product[]> => {
   try {
-    // 1. Busca da Nuvem
     const { data, error } = await supabaseInventory
       .from('products')
       .select('*')
@@ -114,19 +112,15 @@ export const fetchProducts = async (): Promise<Product[]> => {
     if (error) throw error;
     
     let products = data || [];
-
-    // 2. APLICA ALTERAÇÕES PENDENTES (UI Otimista)
-    // Se houver uma alteração de produto na fila que ainda não foi pro banco,
-    // nós aplicamos ela sobre o resultado do banco para o usuário ver o dado atualizado.
     const queue = getQueue();
     const pendingProducts = queue.filter(i => i.type === 'PRODUCT');
     
     pendingProducts.forEach(item => {
         const idx = products.findIndex((p: Product) => p.id === item.payload.id);
         if (idx !== -1) {
-            products[idx] = item.payload; // Sobrescreve com o dado local mais recente
+            products[idx] = item.payload;
         } else if (item.isNew) {
-            products.unshift(item.payload); // Adiciona se for novo
+            products.unshift(item.payload);
         }
     });
 
@@ -139,6 +133,20 @@ export const fetchProducts = async (): Promise<Product[]> => {
 };
 
 export const saveProduct = async (product: Product, isNew: boolean, skipLocal: boolean = false): Promise<void> => {
+  // 1. LOCAL FIRST: Salva localmente IMEDIATAMENTE
+  if (!skipLocal) {
+    const localProducts = JSON.parse(localStorage.getItem(LS_PRODUCTS) || '[]');
+    let newProducts = [...localProducts];
+    const idx = newProducts.findIndex(p => p.id === product.id);
+    if (idx !== -1) {
+        newProducts[idx] = product;
+    } else {
+        newProducts.unshift(product);
+    }
+    localStorage.setItem(LS_PRODUCTS, JSON.stringify(newProducts));
+  }
+
+  // 2. NETWORK: Tenta salvar na nuvem
   try {
     let error;
     if (isNew) {
@@ -155,19 +163,6 @@ export const saveProduct = async (product: Product, isNew: boolean, skipLocal: b
         addToSyncQueue({ type: 'PRODUCT', action: 'SAVE', payload: product, isNew, id: product.id });
     }
   } 
-  
-  if (!skipLocal) {
-    // Atualiza Cache Local Imediatamente
-    const localProducts = JSON.parse(localStorage.getItem(LS_PRODUCTS) || '[]');
-    let newProducts = [...localProducts];
-    const idx = newProducts.findIndex(p => p.id === product.id);
-    if (idx !== -1) {
-        newProducts[idx] = product;
-    } else {
-        newProducts.unshift(product);
-    }
-    localStorage.setItem(LS_PRODUCTS, JSON.stringify(newProducts));
-  }
 };
 
 export const fetchMovements = async (): Promise<Movement[]> => {
@@ -190,16 +185,18 @@ export const fetchMovements = async (): Promise<Movement[]> => {
         matricula: m.matricula
     }));
 
-    // UI OTIMISTA: Adiciona movimentos que estão na fila esperando sync
-    const queue = getQueue();
-    const pendingMovements = queue
-        .filter(i => i.type === 'MOVEMENT')
-        .map(i => i.payload as Movement)
-        // Evita duplicar se por acaso o banco já retornou o item (comparando ID ou timestamp prox)
-        .filter(pm => !formatted.some(fm => fm.id === pm.id));
-    
-    // Coloca os pendentes no topo
-    formatted = [...pendingMovements, ...formatted];
+    // MERGE INTELIGENTE:
+    // Pega o LocalStorage atual. Se tiver movimentos lá que NÃO vieram do banco (por delay de indexação),
+    // adiciona eles no topo para o usuário não sentir que "sumiu".
+    const localStr = localStorage.getItem(LS_MOVEMENTS);
+    if (localStr) {
+        const localMovements: Movement[] = JSON.parse(localStr);
+        // Pega itens recentes locais (últimos 10) que não estão no remote
+        const recentLocals = localMovements.slice(0, 10).filter(lm => 
+            !formatted.some(rm => rm.id === lm.id)
+        );
+        formatted = [...recentLocals, ...formatted];
+    }
     
     localStorage.setItem(LS_MOVEMENTS, JSON.stringify(formatted));
     return formatted;
@@ -210,6 +207,14 @@ export const fetchMovements = async (): Promise<Movement[]> => {
 };
 
 export const saveMovement = async (movement: Movement, skipLocal: boolean = false): Promise<void> => {
+  // 1. LOCAL FIRST
+  if (!skipLocal) {
+    const localMovements = JSON.parse(localStorage.getItem(LS_MOVEMENTS) || '[]');
+    localMovements.unshift(movement);
+    localStorage.setItem(LS_MOVEMENTS, JSON.stringify(localMovements));
+  }
+
+  // 2. NETWORK
   try {
     const { error } = await supabaseInventory.from('movements').insert([{
         prod_id: movement.prodId,
@@ -225,22 +230,16 @@ export const saveMovement = async (movement: Movement, skipLocal: boolean = fals
         addToSyncQueue({ type: 'MOVEMENT', action: 'SAVE', payload: movement, id: movement.id });
     }
   } 
-  
-  if (!skipLocal) {
-    const localMovements = JSON.parse(localStorage.getItem(LS_MOVEMENTS) || '[]');
-    localMovements.unshift(movement);
-    localStorage.setItem(LS_MOVEMENTS, JSON.stringify(localMovements));
-  }
 };
 
 export const deleteAllMovements = async (): Promise<void> => {
+    localStorage.removeItem(LS_MOVEMENTS); // Local instantâneo
     try {
         const { error } = await supabaseInventory.from('movements').delete().neq('id', 0);
         if (error) throw error;
     } catch (e) {
         console.error("Erro ao apagar histórico remoto", e);
     }
-    localStorage.removeItem(LS_MOVEMENTS);
 };
 
 // --- ORDER METHODS (ORDERS DB - SITE) ---
@@ -254,7 +253,7 @@ export const fetchOrders = async (): Promise<Order[]> => {
     
     if (error) throw error;
     
-    // Lógica auxiliar para mapear itens (igual ao anterior)
+    // ... mapeamento de items (mantido) ...
     const localOrdersStr = localStorage.getItem(LS_ORDERS);
     const localOrders: Order[] = localOrdersStr ? JSON.parse(localOrdersStr) : [];
     const localMap = new Map(localOrders.map(o => [o.id, o]));
@@ -304,25 +303,16 @@ export const fetchOrders = async (): Promise<Order[]> => {
         };
     });
     
-    // UI OTIMISTA PARA PEDIDOS
+    // UI OTIMISTA: Aplica fila
     const queue = getQueue();
-    
-    // 1. Aplica Updates/Inserts que estão na fila
     const pendingSaves = queue.filter(i => i.type === 'ORDER');
     pendingSaves.forEach(item => {
         const payload = item.payload as Order;
         const idx = formatted.findIndex(o => o.id === payload.id);
-        if (idx !== -1) {
-            // Mantém algumas props calculadas se necessário, ou sobrescreve tudo
-            formatted[idx] = { ...formatted[idx], ...payload };
-        } else {
-            formatted.unshift(payload);
-        }
+        if (idx !== -1) formatted[idx] = { ...formatted[idx], ...payload };
+        else formatted.unshift(payload);
     });
 
-    // 2. Aplica Deletes que estão na fila
-    // Isso resolve o problema de "clico excluir e não acontece nada"
-    // pois removemos o item da lista visualmente mesmo que o banco ainda tenha ele.
     const pendingDeletes = queue.filter(i => i.type === 'DELETE_ORDER').map(i => i.id);
     if (pendingDeletes.length > 0) {
         formatted = formatted.filter(o => !pendingDeletes.includes(o.id));
@@ -337,6 +327,17 @@ export const fetchOrders = async (): Promise<Order[]> => {
 };
 
 export const saveOrder = async (order: Order, isNew: boolean, skipLocal: boolean = false): Promise<void> => {
+  // 1. LOCAL FIRST
+  if (!skipLocal) {
+    const localOrders = JSON.parse(localStorage.getItem(LS_ORDERS) || '[]');
+    let newOrders = [...localOrders];
+    const idx = newOrders.findIndex(o => o.id === order.id);
+    if (idx !== -1) newOrders[idx] = order;
+    else newOrders.unshift(order);
+    localStorage.setItem(LS_ORDERS, JSON.stringify(newOrders));
+  }
+
+  // 2. NETWORK
   try {
     let error;
     const orderPayload = {
@@ -377,19 +378,22 @@ export const saveOrder = async (order: Order, isNew: boolean, skipLocal: boolean
         addToSyncQueue({ type: 'ORDER', action: 'SAVE', payload: order, isNew, id: order.id });
     }
   } 
-  
-  if (!skipLocal) {
-    const localOrders = JSON.parse(localStorage.getItem(LS_ORDERS) || '[]');
-    let newOrders = [...localOrders];
-    const idx = newOrders.findIndex(o => o.id === order.id);
-    if (idx !== -1) newOrders[idx] = order;
-    else newOrders.unshift(order);
-    localStorage.setItem(LS_ORDERS, JSON.stringify(newOrders));
-  }
 };
 
 export const deleteOrder = async (id: string, skipLocal: boolean = false): Promise<void> => {
+    // 1. LOCAL FIRST
+    if (!skipLocal) {
+        const localOrders = JSON.parse(localStorage.getItem(LS_ORDERS) || '[]');
+        const newOrders = localOrders.filter((o: any) => o.id !== id);
+        localStorage.setItem(LS_ORDERS, JSON.stringify(newOrders));
+    }
+
+    // 2. NETWORK
     try {
+        // Tenta apagar itens primeiro para evitar erro de FK
+        await supabaseOrders.from('order_items').delete().eq('order_id', id);
+        
+        // Apaga o pedido
         const { error } = await supabaseOrders.from('orders').delete().eq('id', id);
         if (error) throw error;
     } catch (e) {
@@ -397,10 +401,4 @@ export const deleteOrder = async (id: string, skipLocal: boolean = false): Promi
             addToSyncQueue({ type: 'DELETE_ORDER', action: 'DELETE', payload: id, id: id });
         }
     } 
-    
-    if (!skipLocal) {
-        const localOrders = JSON.parse(localStorage.getItem(LS_ORDERS) || '[]');
-        const newOrders = localOrders.filter((o: any) => o.id !== id);
-        localStorage.setItem(LS_ORDERS, JSON.stringify(newOrders));
-    }
 };

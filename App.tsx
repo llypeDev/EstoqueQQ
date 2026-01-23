@@ -1,4 +1,3 @@
-// ... (imports remain the same)
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Package, QrCode, ClipboardList, Plus, Search, Settings, 
@@ -14,7 +13,6 @@ import QRModal from './components/modals/QRModal';
 import Toast from './components/ui/Toast';
 
 const App: React.FC = () => {
-  // --- STATE ---
   const [view, setView] = useState<ViewState>('home');
   const [products, setProducts] = useState<Product[]>([]);
   const [movements, setMovements] = useState<Movement[]>([]);
@@ -79,7 +77,10 @@ const App: React.FC = () => {
   };
 
   const refreshData = useCallback(async () => {
-    setIsLoading(true);
+    // Carregamento silencioso se já houver dados, para não travar a UI
+    const isFirstLoad = products.length === 0 && orders.length === 0;
+    if (isFirstLoad) setIsLoading(true);
+    
     try {
       const prods = await storage.fetchProducts();
       const movs = await storage.fetchMovements();
@@ -90,11 +91,11 @@ const App: React.FC = () => {
       setPendingSyncs(storage.getPendingSyncCount());
     } catch (e) {
       console.error(e);
-      addToast('error', 'Erro ao carregar dados.');
+      if(isFirstLoad) addToast('error', 'Erro ao carregar dados.');
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [products.length, orders.length]);
 
   const handleSync = async () => {
       setIsLoading(true);
@@ -131,16 +132,11 @@ const App: React.FC = () => {
   useEffect(() => {
     storage.initDatabase();
     refreshData();
-
     const handleOnline = () => { setIsOnline(true); handleSync(); };
     const handleOffline = () => setIsOnline(false);
-
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-
-    // Sync inicial se houver internet
     if (navigator.onLine) handleSync();
-
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -148,10 +144,11 @@ const App: React.FC = () => {
   }, [refreshData]);
 
   const handleClearHistory = async () => {
-      if (window.confirm('Deseja limpar o histórico? (Esta ação limpará o banco de dados remoto se online)')) {
+      if (window.confirm('Deseja limpar o histórico?')) {
           setIsLoading(true);
           try {
               await storage.deleteAllMovements();
+              setMovements([]); // UI Optmistic
               await refreshData();
               addToast('success', 'Histórico apagado.');
           } catch (e: any) {
@@ -167,7 +164,6 @@ const App: React.FC = () => {
       addToast('error', 'Preencha código e nome.');
       return;
     }
-    
     setIsLoading(true);
     try {
       const qty = parseInt(newProdForm.qty) || 0;
@@ -177,7 +173,7 @@ const App: React.FC = () => {
       setNewProdForm({ id: '', name: '', qty: '' });
       addToast('success', 'Produto salvo.');
     } catch (e: any) {
-      addToast('info', 'Salvo localmente (aguardando sync).');
+      addToast('info', 'Salvo localmente.');
       refreshData();
       setShowAddProduct(false);
     } finally {
@@ -201,12 +197,10 @@ const App: React.FC = () => {
         return;
     }
 
-    setIsLoading(true);
-    try {
-      const newQty = selectedProduct.qty + finalQtyDelta;
-      const updatedProd = { ...selectedProduct, qty: newQty };
-      await storage.saveProduct(updatedProd, false);
-      await storage.saveMovement({
+    // UI OTIMISTA: Atualiza estado IMEDIATAMENTE antes de chamar o storage
+    const newQty = selectedProduct.qty + finalQtyDelta;
+    const updatedProd = { ...selectedProduct, qty: newQty };
+    const newMovement = {
         id: Date.now(),
         date: new Date().toISOString(),
         prodId: selectedProduct.id,
@@ -214,18 +208,25 @@ const App: React.FC = () => {
         qty: finalQtyDelta, 
         obs: baixaForm.obs,
         matricula: baixaForm.matricula
-      });
-      await refreshData();
-      setShowBaixa(false);
-      setSelectedProduct(null);
-      setBaixaForm({ qty: 1, obs: '', matricula: '' }); 
-      addToast('success', 'Estoque atualizado.');
-    } catch (e: any) {
-      addToast('info', 'Atualizado localmente.');
+    };
+
+    // Atualiza React State
+    setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
+    setMovements(prev => [newMovement, ...prev]);
+    
+    setShowBaixa(false);
+    setSelectedProduct(null);
+    setBaixaForm({ qty: 1, obs: '', matricula: '' }); 
+    addToast('success', 'Estoque atualizado.');
+
+    try {
+      await storage.saveProduct(updatedProd, false);
+      await storage.saveMovement(newMovement);
+      // Opcional: Chama refresh silencioso para garantir consistência
       refreshData();
-      setShowBaixa(false);
-    } finally {
-      setIsLoading(false);
+    } catch (e: any) {
+      // Se falhar, o storage já cuidou de salvar localmente, então a UI está correta.
+      console.error(e);
     }
   };
 
@@ -236,12 +237,10 @@ const App: React.FC = () => {
       });
       setShowOrderForm(true);
   };
-
   const openEditOrder = (order: Order) => {
       setOrderForm({ ...order });
       setShowOrderForm(true);
   };
-
   const openPicking = (order: Order) => {
       setSelectedOrder(order);
       setShowOrderPicking(true);
@@ -262,15 +261,24 @@ const App: React.FC = () => {
           const isNew = !orders.find(o => o.id === orderForm.id);
           const allPicked = orderForm.items.every(i => i.qtyPicked >= i.qtyRequested);
           const hasShipping = orderForm.envioMalote || orderForm.entregaMatriz;
-          const status = (allPicked && hasShipping) ? 'completed' : 'pending';
-          await storage.saveOrder({ ...orderForm, status }, isNew);
-          await refreshData();
+          const status: 'pending' | 'completed' = (allPicked && hasShipping) ? 'completed' : 'pending';
+          const orderToSave: Order = { ...orderForm, status };
+
+          // UI Otimista
+          if (isNew) {
+            setOrders(prev => [orderToSave, ...prev]);
+          } else {
+            setOrders(prev => prev.map(o => o.id === orderToSave.id ? orderToSave : o));
+          }
+          
           setShowOrderForm(false);
           addToast('success', 'Pedido salvo!');
+
+          await storage.saveOrder(orderToSave, isNew);
+          await refreshData();
       } catch (e: any) {
           addToast('info', 'Salvo localmente.');
           refreshData();
-          setShowOrderForm(false);
       } finally {
           setIsLoading(false);
       }
@@ -285,12 +293,15 @@ const App: React.FC = () => {
 
         const allPicked = updatedOrder.items.every(i => i.qtyPicked >= i.qtyRequested);
         const hasShipping = updatedOrder.envioMalote || updatedOrder.entregaMatriz;
-        const newStatus = (allPicked && hasShipping) ? 'completed' : 'pending';
+        const newStatus: 'pending' | 'completed' = (allPicked && hasShipping) ? 'completed' : 'pending';
         updatedOrder.status = newStatus;
+
+        // UI Otimista
+        setOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
 
         await storage.saveOrder(updatedOrder, false);
         if (newStatus === 'completed' && order.status !== 'completed') {
-            await storage.saveMovement({
+            const autoMov = {
                 id: Date.now(),
                 date: new Date().toISOString(),
                 prodId: null, 
@@ -298,7 +309,8 @@ const App: React.FC = () => {
                 qty: 0,
                 obs: `Concluído via ${updatedOrder.envioMalote ? 'Malote' : 'Matriz'}`,
                 matricula: updatedOrder.matricula
-            });
+            };
+            await storage.saveMovement(autoMov);
         }
         await refreshData();
         addToast('success', 'Status atualizado!');
@@ -312,16 +324,17 @@ const App: React.FC = () => {
 
   const handleDeleteOrder = async (id: string) => {
       if(!window.confirm('Excluir pedido definitivamente?')) return;
-      setIsLoading(true);
+      
+      // UI OTIMISTA: Remove visualmente ANTES de chamar o backend
+      setOrders(prev => prev.filter(o => o.id !== id));
+      addToast('success', 'Pedido excluído.');
+
       try {
           await storage.deleteOrder(id);
-          await refreshData();
-          addToast('success', 'Pedido excluído.');
-      } catch (e: any) {
-          addToast('info', 'Agendado para exclusão.');
+          // Chama refresh em background para garantir sync
           refreshData();
-      } finally {
-          setIsLoading(false);
+      } catch (e: any) {
+          console.error(e);
       }
   };
 
@@ -359,8 +372,6 @@ const App: React.FC = () => {
       if (!selectedOrder) return;
       if (item.qtyPicked >= item.qtyRequested) return;
 
-      // FIX: Robust ID comparison
-      // Garante que ambos sejam strings e sem espaços para comparar
       const productInStock = products.find(p => String(p.id).trim() === String(item.productId).trim());
 
       if (!productInStock) {
@@ -375,9 +386,21 @@ const App: React.FC = () => {
 
       if(!silent && !window.confirm(`Confirmar separação de ${item.productName}?`)) return;
 
-      setIsLoading(true);
+      // Optimistic UI updates
+      const newProdQty = productInStock.qty - 1;
+      const updatedProd = { ...productInStock, qty: newProdQty };
+      const updatedItems = selectedOrder.items.map(i => 
+          i.productId === item.productId ? { ...i, qtyPicked: i.qtyPicked + 1 } : i
+      );
+      const updatedOrder: Order = { ...selectedOrder, items: updatedItems, status: 'pending' };
+
+      setProducts(prev => prev.map(p => p.id === updatedProd.id ? updatedProd : p));
+      setOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o));
+      setSelectedOrder(updatedOrder); // Update Modal View
+      addToast('success', `Item separado.`);
+
       try {
-          await storage.saveProduct({ ...productInStock, qty: productInStock.qty - 1 }, false);
+          await storage.saveProduct(updatedProd, false);
           await storage.saveMovement({
               id: Date.now(),
               date: new Date().toISOString(),
@@ -387,19 +410,10 @@ const App: React.FC = () => {
               obs: `Separação Pedido #${selectedOrder.orderNumber}`,
               matricula: selectedOrder.matricula
           });
-          const updatedItems = selectedOrder.items.map(i => 
-              i.productId === item.productId ? { ...i, qtyPicked: i.qtyPicked + 1 } : i
-          );
-          const updatedOrder: Order = { ...selectedOrder, items: updatedItems, status: 'pending' };
           await storage.saveOrder(updatedOrder, false);
-          setSelectedOrder(updatedOrder);
           await refreshData(); 
-          addToast('success', `Item separado.`);
       } catch (e: any) {
-          addToast('info', 'Agendado localmente.');
-          refreshData();
-      } finally {
-          setIsLoading(false);
+         console.error(e);
       }
   };
 
@@ -469,7 +483,6 @@ const App: React.FC = () => {
             setShowAddProduct(true);
         }
     } else if (scanMode === 'order' && selectedOrder) {
-        // Busca usando a mesma lógica robusta do handlePickItem
         const item = selectedOrder.items.find(i => String(i.productId).trim() === String(code).trim());
         if (item) handlePickItem(item, true);
         else addToast('error', 'Item não pertence a este pedido.');
@@ -516,7 +529,7 @@ const App: React.FC = () => {
   return (
     <div className="max-w-[480px] mx-auto bg-slate-50 min-h-screen relative shadow-2xl pb-24">
       <Toast toasts={toasts} removeToast={removeToast} />
-
+      
       <header className="bg-qq-green text-white p-4 sticky top-0 z-40 shadow-lg flex justify-between items-center rounded-b-3xl">
         <div className="flex items-center gap-3">
             <div className="bg-white/10 p-2 rounded-xl backdrop-blur-sm">
@@ -563,6 +576,7 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* VIEWS */}
       {view === 'home' && (
         <div className="p-6 animate-fade-in space-y-6">
             <div className="flex justify-between items-end">
@@ -571,7 +585,7 @@ const App: React.FC = () => {
                     <Plus size={18} /> Novo
                 </button>
             </div>
-
+            
             <div className="relative group">
                 <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
                     <Search className="h-5 w-5 text-slate-400" />
@@ -584,7 +598,6 @@ const App: React.FC = () => {
                     className="block w-full pl-11 pr-4 py-3.5 bg-white border-2 border-slate-100 rounded-2xl text-slate-700 focus:outline-none focus:border-qq-green transition-all shadow-sm"
                 />
             </div>
-
             <div className="space-y-3">
                 {filteredProducts.length === 0 ? (
                     <div className="text-center py-12 opacity-50">
@@ -629,7 +642,6 @@ const App: React.FC = () => {
                       <Plus size={18} /> Criar Pedido
                   </button>
               </div>
-
               <div className="space-y-4">
                   {orders.length === 0 ? (
                       <div className="text-center py-12 opacity-50 text-slate-400">
@@ -643,7 +655,6 @@ const App: React.FC = () => {
                           const progress = totalItems > 0 ? (pickedItems / totalItems) * 100 : 0;
                           const isFullyPicked = totalItems > 0 && pickedItems === totalItems;
                           const isCompleted = order.status === 'completed';
-
                           return (
                               <div key={order.id} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 active:scale-[0.99] transition-transform relative overflow-hidden">
                                   <div className="flex justify-between items-start mb-2">
@@ -659,7 +670,6 @@ const App: React.FC = () => {
                                             <span>{new Date(order.date).toLocaleDateString('pt-BR')}</span>
                                             {order.filial && <span className="bg-slate-50 px-1 border border-slate-100 rounded">Filial: {order.filial}</span>}
                                           </div>
-                                          
                                           {isFullyPicked && (
                                               <div className="flex gap-2 mt-3 pt-2 border-t border-slate-50">
                                                 <label className={`flex items-center gap-1.5 text-xs font-bold px-2 py-1.5 rounded-lg border cursor-pointer ${order.envioMalote ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-white border-slate-200 text-slate-400'}`}>
@@ -678,7 +688,6 @@ const App: React.FC = () => {
                                           <button onClick={() => handleDeleteOrder(order.id)} className="p-2 text-slate-400 hover:text-red-500 transition"><Trash2 size={18} /></button>
                                       </div>
                                   </div>
-                                  
                                   <div onClick={() => openPicking(order)} className="mt-3 cursor-pointer group">
                                       <div className="flex justify-between text-xs font-bold text-slate-500 mb-1">
                                           <span>Progresso</span>
@@ -716,7 +725,6 @@ const App: React.FC = () => {
                 <h2 className="text-2xl font-bold text-slate-800">Histórico</h2>
                 <button onClick={handleClearHistory} className="text-white bg-red-500 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1"><Trash2 size={14} /> Limpar</button>
             </div>
-
             <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm grid grid-cols-2 gap-3">
                 <div>
                     <label className="text-[10px] text-slate-500 font-bold block mb-1 uppercase">De:</label>
@@ -727,7 +735,6 @@ const App: React.FC = () => {
                     <input type="date" value={endDate} onChange={e => setEndDate(e.target.value)} className="w-full bg-slate-50 border rounded-lg p-2 text-xs outline-none" />
                 </div>
             </div>
-
             <div className="space-y-3">
                 {filteredHistory.length === 0 ? (
                     <div className="text-center py-12 opacity-50 text-slate-400">
@@ -808,9 +815,7 @@ const App: React.FC = () => {
             </div>
         </div>
       )}
-      
-      {/* ... Rest of modals ... */}
-      
+
       {showAddProduct && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
@@ -846,13 +851,10 @@ const App: React.FC = () => {
                             <input type="date" value={orderForm.date ? orderForm.date.split('T')[0] : ''} onChange={e => setOrderForm({...orderForm, date: e.target.value})} className="w-full border-2 rounded-xl p-2 text-sm" />
                           </div>
                       </div>
-                      
                       <div>
                         <label className="text-[10px] text-slate-500 font-bold ml-1 uppercase">Nome do Cliente</label>
                         <input type="text" value={orderForm.customerName} onChange={e => setOrderForm({...orderForm, customerName: e.target.value})} className="w-full border-2 rounded-xl p-2 text-sm" placeholder="Nome Completo" />
                       </div>
-                      
-                      {/* Novos Campos */}
                       <div>
                         <label className="text-[10px] text-slate-500 font-bold ml-1 uppercase">Whatsapp / Telefone</label>
                         <input type="text" value={orderForm.whatsapp || ''} onChange={e => setOrderForm({...orderForm, whatsapp: e.target.value})} className="w-full border-2 rounded-xl p-2 text-sm" placeholder="(00) 00000-0000" />
@@ -866,7 +868,6 @@ const App: React.FC = () => {
                             </div>
                         </div>
                       </div>
-                      
                       <div className="grid grid-cols-2 gap-3">
                         <div>
                             <label className="text-[10px] text-slate-500 font-bold ml-1 uppercase">Filial</label>
@@ -975,7 +976,7 @@ const App: React.FC = () => {
             </div>
         </div>
       )}
-
+      
       {showExport && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
