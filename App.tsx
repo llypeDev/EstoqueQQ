@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { 
   Package, QrCode, ClipboardList, Plus, Search, Settings, 
   Database, Wifi, WifiOff, AlertTriangle, FileText, ArrowRight, Minus, 
@@ -93,7 +93,7 @@ const App: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  }, [products.length, orders.length]);
+  }, []); // Removido dependências que causavam loops
 
   const handleTestConnection = async () => {
       setIsLoading(true);
@@ -123,7 +123,8 @@ const App: React.FC = () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
-  }, [refreshData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Executa apenas uma vez na montagem
 
   const handleClearHistory = async () => {
       if (window.confirm('Deseja limpar o histórico (BANCO DE DADOS)?')) {
@@ -133,8 +134,10 @@ const App: React.FC = () => {
               setMovements([]); 
               await refreshData();
               addToast('success', 'Histórico apagado do banco.');
-          } catch (e: any) {
-              addToast('error', 'Erro ao apagar. Verifique conexão.');
+          } catch (e: unknown) {
+              const errorMessage = e instanceof Error ? e.message : 'Erro desconhecido';
+              console.error('Erro ao apagar histórico:', e);
+              addToast('error', `Erro ao apagar: ${errorMessage}`);
           } finally {
               setIsLoading(false);
           }
@@ -142,8 +145,21 @@ const App: React.FC = () => {
   };
 
   const handleSaveProduct = async () => {
-    if (!newProdForm.id || !newProdForm.name) {
+    if (!newProdForm.id || !newProdForm.name.trim()) {
       addToast('error', 'Preencha código e nome.');
+      return;
+    }
+    if (newProdForm.id.trim().length === 0) {
+      addToast('error', 'O código não pode estar vazio.');
+      return;
+    }
+    if (newProdForm.name.trim().length < 2) {
+      addToast('error', 'O nome deve ter pelo menos 2 caracteres.');
+      return;
+    }
+    const qtyNum = parseInt(newProdForm.qty);
+    if (isNaN(qtyNum) || qtyNum < 0) {
+      addToast('error', 'A quantidade deve ser um número válido (>= 0).');
       return;
     }
     setIsLoading(true);
@@ -155,10 +171,11 @@ const App: React.FC = () => {
       setShowAddProduct(false);
       setNewProdForm({ id: '', name: '', qty: '' });
       addToast('success', 'Produto salvo no banco!');
-    } catch (e: any) {
+    } catch (e: unknown) {
       // Se falhar, avisa erro
-      addToast('error', 'Erro ao salvar. Tente novamente.');
-      console.error(e);
+      const errorMessage = e instanceof Error ? e.message : 'Erro desconhecido';
+      addToast('error', `Erro ao salvar: ${errorMessage}`);
+      console.error('Erro ao salvar produto:', e);
     } finally {
       setIsLoading(false);
     }
@@ -167,16 +184,27 @@ const App: React.FC = () => {
   const handleConfirmTransaction = async () => {
     if (!selectedProduct) return;
     const qtyInput = baixaForm.qty;
+    
+    if (qtyInput <= 0 || !Number.isInteger(qtyInput)) {
+      addToast('error', 'A quantidade deve ser um número inteiro positivo.');
+      return;
+    }
+    
     const isRemoval = transactionType === 'out';
     const finalQtyDelta = isRemoval ? -qtyInput : qtyInput;
     
     if (isRemoval && selectedProduct.qty < qtyInput) {
-      addToast('error', 'Estoque insuficiente.');
+      addToast('error', `Estoque insuficiente. Disponível: ${selectedProduct.qty}`);
       return;
     }
 
     if (!baixaForm.matricula.trim()) {
         addToast('error', 'Preencha a matrícula.');
+        return;
+    }
+    
+    if (baixaForm.matricula.trim().length < 3) {
+        addToast('error', 'A matrícula deve ter pelo menos 3 caracteres.');
         return;
     }
 
@@ -207,8 +235,10 @@ const App: React.FC = () => {
       await storage.saveMovement(newMovement);
       addToast('success', 'Confirmado no Banco!');
       refreshData();
-    } catch (e: any) {
-      addToast('error', 'Erro de conexão. A operação não foi salva.');
+    } catch (e: unknown) {
+      const errorMessage = e instanceof Error ? e.message : 'Erro de conexão';
+      addToast('error', `Erro: ${errorMessage}. A operação não foi salva.`);
+      console.error('Erro ao salvar movimento:', e);
       refreshData(); // Reverte UI para o estado real do banco
     }
   };
@@ -230,12 +260,26 @@ const App: React.FC = () => {
   };
 
   const handleSaveOrder = async () => {
-      if (!orderForm.orderNumber || !orderForm.customerName) {
-          addToast('error', 'Preencha Número e Nome.');
+      if (!orderForm.orderNumber || !orderForm.orderNumber.trim()) {
+          addToast('error', 'Preencha o número do pedido.');
+          return;
+      }
+      if (!orderForm.customerName || !orderForm.customerName.trim()) {
+          addToast('error', 'Preencha o nome do cliente.');
+          return;
+      }
+      if (orderForm.customerName.trim().length < 2) {
+          addToast('error', 'O nome do cliente deve ter pelo menos 2 caracteres.');
           return;
       }
       if (orderForm.items.length === 0) {
-          addToast('error', 'Adicione itens.');
+          addToast('error', 'Adicione pelo menos um item ao pedido.');
+          return;
+      }
+      // Valida se todos os itens têm quantidade > 0
+      const invalidItems = orderForm.items.filter(item => item.qtyRequested <= 0);
+      if (invalidItems.length > 0) {
+          addToast('error', 'Todos os itens devem ter quantidade maior que zero.');
           return;
       }
 
@@ -260,8 +304,10 @@ const App: React.FC = () => {
           await storage.saveOrder(orderToSave, isNew);
           addToast('success', 'Pedido salvo no banco!');
           await refreshData();
-      } catch (e: any) {
-          addToast('error', 'Erro ao salvar pedido.');
+      } catch (e: unknown) {
+          const errorMessage = e instanceof Error ? e.message : 'Erro desconhecido';
+          addToast('error', `Erro ao salvar pedido: ${errorMessage}`);
+          console.error('Erro ao salvar pedido:', e);
           refreshData(); // Reverte
       } finally {
           setIsLoading(false);
@@ -297,8 +343,10 @@ const App: React.FC = () => {
         }
         await refreshData();
         addToast('success', 'Status atualizado no banco!');
-    } catch (e: any) {
-        addToast('error', 'Erro ao atualizar status.');
+    } catch (e: unknown) {
+        const errorMessage = e instanceof Error ? e.message : 'Erro desconhecido';
+        addToast('error', `Erro ao atualizar status: ${errorMessage}`);
+        console.error('Erro ao atualizar status:', e);
         refreshData();
     } finally {
         setIsLoading(false);
@@ -315,20 +363,21 @@ const App: React.FC = () => {
           await storage.deleteOrder(id);
           addToast('success', 'Pedido excluído do banco.');
           await refreshData();
-      } catch (e: any) {
-          console.error(e);
-          addToast('error', 'Erro ao excluir do banco.');
+      } catch (e: unknown) {
+          const errorMessage = e instanceof Error ? e.message : 'Erro desconhecido';
+          console.error('Erro ao excluir pedido:', e);
+          addToast('error', `Erro ao excluir: ${errorMessage}`);
           refreshData(); // Traz de volta se falhou
       }
   };
 
-  const addProductToOrder = (product: Product) => {
+  const addProductToOrder = useCallback((product: Product) => {
       const existing = orderForm.items.find(i => i.productId === product.id);
       if (existing) {
           const updatedItems = orderForm.items.map(i => 
               i.productId === product.id ? { ...i, qtyRequested: i.qtyRequested + 1 } : i
           );
-          setOrderForm({ ...orderForm, items: updatedItems });
+          setOrderForm(prev => ({ ...prev, items: updatedItems }));
       } else {
           const newItem: OrderItem = {
               productId: product.id,
@@ -336,10 +385,10 @@ const App: React.FC = () => {
               qtyRequested: 1,
               qtyPicked: 0
           };
-          setOrderForm({ ...orderForm, items: [...orderForm.items, newItem] });
+          setOrderForm(prev => ({ ...prev, items: [...prev.items, newItem] }));
       }
       addToast('success', 'Item adicionado.');
-  };
+  }, [orderForm.items, addToast]);
 
   const updateOrderItemQty = (prodId: string, newQty: number) => {
       if (newQty <= 0) {
@@ -352,7 +401,7 @@ const App: React.FC = () => {
       }
   };
 
-  const handlePickItem = async (item: OrderItem, silent: boolean = false) => {
+  const handlePickItem = useCallback(async (item: OrderItem, silent: boolean = false) => {
       if (!selectedOrder) return;
       if (item.qtyPicked >= item.qtyRequested) return;
 
@@ -397,12 +446,13 @@ const App: React.FC = () => {
           await storage.saveOrder(updatedOrder, false);
           addToast('success', 'Separado!');
           await refreshData(); 
-      } catch (e: any) {
-         console.error(e);
-         addToast('error', 'Erro ao salvar separação.');
+      } catch (e: unknown) {
+         const errorMessage = e instanceof Error ? e.message : 'Erro desconhecido';
+         console.error('Erro ao salvar separação:', e);
+         addToast('error', `Erro ao salvar separação: ${errorMessage}`);
          refreshData(); // Revert
       }
-  };
+  }, [selectedOrder, products, addToast, refreshData]);
 
   const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -446,8 +496,10 @@ const App: React.FC = () => {
               await refreshData();
               addToast('success', `${newOrdersMap.size} pedidos importados para o banco!`);
               setShowImport(false);
-          } catch (err: any) {
-              addToast('error', 'Falha ao processar CSV.');
+          } catch (err: unknown) {
+              const errorMessage = err instanceof Error ? err.message : 'Erro desconhecido';
+              console.error('Erro ao importar CSV:', err);
+              addToast('error', `Falha ao processar CSV: ${errorMessage}`);
           } finally {
               setIsLoading(false);
               if(fileInputRef.current) fileInputRef.current.value = '';
@@ -456,7 +508,7 @@ const App: React.FC = () => {
       reader.readAsText(file);
   };
 
-  const handleScan = (code: string) => {
+  const handleScan = useCallback((code: string) => {
     setShowScanner(false);
     if (scanMode === 'global') {
         const prod = products.find(p => p.id === code);
@@ -471,11 +523,14 @@ const App: React.FC = () => {
         }
     } else if (scanMode === 'order' && selectedOrder) {
         const item = selectedOrder.items.find(i => String(i.productId).trim() === String(code).trim());
-        if (item) handlePickItem(item, true);
-        else addToast('error', 'Item não pertence a este pedido.');
+        if (item) {
+          handlePickItem(item, true);
+        } else {
+          addToast('error', 'Item não pertence a este pedido.');
+        }
         setScanMode('global');
     }
-  };
+  }, [scanMode, products, selectedOrder, handlePickItem, addToast]);
 
   const openOrderScanner = () => { setScanMode('order'); setShowScanner(true); };
   const handleManualCodeCheck = () => {
@@ -489,11 +544,15 @@ const App: React.FC = () => {
       setShowBaixa(true);
   };
 
-  const filteredProducts = products.filter(p => 
-    p.name.toLowerCase().includes(search.toLowerCase()) || String(p.id).toLowerCase().includes(search.toLowerCase())
-  );
+  const filteredProducts = useMemo(() => {
+    const searchLower = search.toLowerCase();
+    return products.filter(p => 
+      p.name.toLowerCase().includes(searchLower) || String(p.id).toLowerCase().includes(searchLower)
+    );
+  }, [products, search]);
 
-  const filteredHistory = movements.filter(m => {
+  const filteredHistory = useMemo(() => {
+    return movements.filter(m => {
       if (!startDate && !endDate) return true;
       const mDate = new Date(m.date);
       mDate.setHours(0,0,0,0);
@@ -507,11 +566,15 @@ const App: React.FC = () => {
           valid = valid && mDate.getTime() <= eDate.getTime();
       }
       return valid;
-  });
+    });
+  }, [movements, startDate, endDate]);
 
-  const filteredOrderProducts = products.filter(p => 
-    p.name.toLowerCase().includes(orderItemSearch.toLowerCase()) || String(p.id).toLowerCase().includes(orderItemSearch.toLowerCase())
-  );
+  const filteredOrderProducts = useMemo(() => {
+    const searchLower = orderItemSearch.toLowerCase();
+    return products.filter(p => 
+      p.name.toLowerCase().includes(searchLower) || String(p.id).toLowerCase().includes(searchLower)
+    );
+  }, [products, orderItemSearch]);
 
   return (
     <div className="max-w-[480px] mx-auto bg-slate-50 min-h-screen relative shadow-2xl pb-24">
@@ -540,13 +603,13 @@ const App: React.FC = () => {
             </div>
         </div>
         <div className="flex gap-2">
-            <button onClick={refreshData} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition relative">
+            <button onClick={refreshData} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition relative" aria-label="Atualizar dados">
                 <RefreshCw size={18} className={isLoading ? "animate-spin" : ""} />
             </button>
-            <button onClick={() => setShowExport(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition">
+            <button onClick={() => setShowExport(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition" aria-label="Exportar dados">
                 <FileText size={18} />
             </button>
-            <button onClick={() => setShowSettings(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition">
+            <button onClick={() => setShowSettings(true)} className="w-10 h-10 flex items-center justify-center bg-qq-green-dark/50 hover:bg-qq-green-dark rounded-full transition" aria-label="Configurações">
                 <Settings size={18} />
             </button>
         </div>
@@ -563,7 +626,7 @@ const App: React.FC = () => {
         <div className="p-6 animate-fade-in space-y-6">
             <div className="flex justify-between items-end">
                 <h2 className="text-2xl font-bold text-slate-800">Produtos</h2>
-                <button onClick={() => setShowAddProduct(true)} className="bg-qq-yellow hover:bg-qq-yellow-dark text-slate-900 px-4 py-2 rounded-xl text-sm font-bold shadow-md shadow-orange-100 transition flex items-center gap-2 active:scale-95">
+                <button onClick={() => setShowAddProduct(true)} className="bg-qq-yellow hover:bg-qq-yellow-dark text-slate-900 px-4 py-2 rounded-xl text-sm font-bold shadow-md shadow-orange-100 transition flex items-center gap-2 active:scale-95" aria-label="Adicionar novo produto">
                     <Plus size={18} /> Novo
                 </button>
             </div>
@@ -577,6 +640,7 @@ const App: React.FC = () => {
                     placeholder="Buscar nome ou código..."
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
+                    aria-label="Buscar produtos"
                     className="block w-full pl-11 pr-4 py-3.5 bg-white border-2 border-slate-100 rounded-2xl text-slate-700 focus:outline-none focus:border-qq-green transition-all shadow-sm"
                 />
             </div>
@@ -605,6 +669,7 @@ const App: React.FC = () => {
                                 <button 
                                     onClick={(e) => { e.stopPropagation(); setViewQRProduct(p); }} 
                                     className="p-3 bg-slate-50 hover:bg-slate-100 rounded-xl text-slate-400 hover:text-qq-green transition-colors"
+                                    aria-label={`Ver QR Code de ${p.name}`}
                                 >
                                     <QrCode size={20} />
                                 </button>
@@ -620,7 +685,7 @@ const App: React.FC = () => {
           <div className="p-6 animate-fade-in space-y-6">
               <div className="flex justify-between items-end">
                   <h2 className="text-2xl font-bold text-slate-800">Pedidos</h2>
-                  <button onClick={openNewOrder} className="bg-qq-green hover:bg-qq-green-dark text-white px-4 py-2 rounded-xl text-sm font-bold shadow-md shadow-green-100 transition flex items-center gap-2 active:scale-95">
+                  <button onClick={openNewOrder} className="bg-qq-green hover:bg-qq-green-dark text-white px-4 py-2 rounded-xl text-sm font-bold shadow-md shadow-green-100 transition flex items-center gap-2 active:scale-95" aria-label="Criar novo pedido">
                       <Plus size={18} /> Criar Pedido
                   </button>
               </div>
@@ -666,8 +731,8 @@ const App: React.FC = () => {
                                           )}
                                       </div>
                                       <div className="flex gap-1 flex-col">
-                                          <button onClick={() => openEditOrder(order)} className="p-2 text-slate-400 hover:text-qq-green transition"><Edit size={18} /></button>
-                                          <button onClick={() => handleDeleteOrder(order.id)} className="p-2 text-slate-400 hover:text-red-500 transition"><Trash2 size={18} /></button>
+                                          <button onClick={() => openEditOrder(order)} className="p-2 text-slate-400 hover:text-qq-green transition" aria-label={`Editar pedido ${order.orderNumber}`}><Edit size={18} /></button>
+                                          <button onClick={() => handleDeleteOrder(order.id)} className="p-2 text-slate-400 hover:text-red-500 transition" aria-label={`Excluir pedido ${order.orderNumber}`}><Trash2 size={18} /></button>
                                       </div>
                                   </div>
                                   <div onClick={() => openPicking(order)} className="mt-3 cursor-pointer group">
@@ -695,8 +760,8 @@ const App: React.FC = () => {
                 <p className="font-medium text-white">Toque para escanear</p>
             </div>
             <div className="mt-8 flex gap-3">
-                <input id="manual-code-input" type="text" placeholder="Digitar código..." className="flex-1 bg-white border-2 border-slate-200 rounded-xl px-4 py-3 font-mono font-bold outline-none" />
-                <button onClick={handleManualCodeCheck} className="bg-qq-green text-white px-5 rounded-xl transition"><ArrowRight size={24} /></button>
+                <input id="manual-code-input" type="text" placeholder="Digitar código..." aria-label="Código manual" className="flex-1 bg-white border-2 border-slate-200 rounded-xl px-4 py-3 font-mono font-bold outline-none" />
+                <button onClick={handleManualCodeCheck} className="bg-qq-green text-white px-5 rounded-xl transition" aria-label="Verificar código manual"><ArrowRight size={24} /></button>
             </div>
         </div>
       )}
@@ -705,7 +770,7 @@ const App: React.FC = () => {
         <div className="p-6 animate-fade-in space-y-4">
             <div className="flex justify-between items-center mb-2">
                 <h2 className="text-2xl font-bold text-slate-800">Histórico</h2>
-                <button onClick={handleClearHistory} className="text-white bg-red-500 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1"><Trash2 size={14} /> Limpar</button>
+                <button onClick={handleClearHistory} className="text-white bg-red-500 px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1" aria-label="Limpar histórico"><Trash2 size={14} /> Limpar</button>
             </div>
             <div className="bg-white p-3 rounded-xl border border-slate-100 shadow-sm grid grid-cols-2 gap-3">
                 <div>
@@ -804,9 +869,18 @@ const App: React.FC = () => {
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl">
                 <h3 className="text-xl font-bold mb-6 text-center">Novo Produto</h3>
                 <div className="space-y-4">
-                    <input type="text" placeholder="Código (EAN/QR)" value={newProdForm.id} onChange={e => setNewProdForm({...newProdForm, id: e.target.value})} className="w-full border-2 rounded-xl p-3 outline-none" />
-                    <input type="text" placeholder="Nome do Produto" value={newProdForm.name} onChange={e => setNewProdForm({...newProdForm, name: e.target.value})} className="w-full border-2 rounded-xl p-3 outline-none" />
-                    <input type="number" placeholder="Quantidade Inicial" value={newProdForm.qty} onChange={e => setNewProdForm({...newProdForm, qty: e.target.value})} className="w-full border-2 rounded-xl p-3 outline-none" />
+                    <div>
+                        <label htmlFor="prod-code" className="text-xs text-slate-600 font-bold mb-1 block">Código (EAN/QR) *</label>
+                        <input id="prod-code" type="text" placeholder="Código (EAN/QR)" value={newProdForm.id} onChange={e => setNewProdForm({...newProdForm, id: e.target.value})} className="w-full border-2 rounded-xl p-3 outline-none" required aria-required="true" />
+                    </div>
+                    <div>
+                        <label htmlFor="prod-name" className="text-xs text-slate-600 font-bold mb-1 block">Nome do Produto *</label>
+                        <input id="prod-name" type="text" placeholder="Nome do Produto" value={newProdForm.name} onChange={e => setNewProdForm({...newProdForm, name: e.target.value})} className="w-full border-2 rounded-xl p-3 outline-none" required aria-required="true" />
+                    </div>
+                    <div>
+                        <label htmlFor="prod-qty" className="text-xs text-slate-600 font-bold mb-1 block">Quantidade Inicial</label>
+                        <input id="prod-qty" type="number" min="0" placeholder="Quantidade Inicial" value={newProdForm.qty} onChange={e => setNewProdForm({...newProdForm, qty: e.target.value})} className="w-full border-2 rounded-xl p-3 outline-none" />
+                    </div>
                 </div>
                 <div className="flex gap-3 mt-6">
                     <button onClick={() => setShowAddProduct(false)} className="flex-1 bg-slate-100 py-3 rounded-xl font-bold">Cancelar</button>
@@ -945,12 +1019,18 @@ const App: React.FC = () => {
                 </div>
                 <div className="flex items-center justify-center gap-4 mb-6">
                     <button onClick={() => setBaixaForm({...baixaForm, qty: Math.max(1, baixaForm.qty - 1)})} className="w-10 h-10 rounded-full bg-slate-100 font-bold flex items-center justify-center"><Minus size={18}/></button>
-                    <input type="number" value={baixaForm.qty} onChange={e => setBaixaForm({...baixaForm, qty: parseInt(e.target.value) || 1})} className="w-20 text-center text-2xl font-bold outline-none bg-transparent" />
+                    <input type="number" min="1" value={baixaForm.qty} onChange={e => setBaixaForm({...baixaForm, qty: Math.max(1, parseInt(e.target.value) || 1)})} className="w-20 text-center text-2xl font-bold outline-none bg-transparent" aria-label="Quantidade" />
                     <button onClick={() => setBaixaForm({...baixaForm, qty: baixaForm.qty + 1})} className="w-10 h-10 rounded-full bg-slate-100 font-bold flex items-center justify-center"><Plus size={18}/></button>
                 </div>
                 <div className="space-y-3">
-                    <input type="text" placeholder="Sua Matrícula" value={baixaForm.matricula} onChange={e => setBaixaForm({...baixaForm, matricula: e.target.value})} className="w-full border-2 rounded-xl p-3 text-sm outline-none" />
-                    <textarea placeholder="Observação (opcional)" value={baixaForm.obs} onChange={e => setBaixaForm({...baixaForm, obs: e.target.value})} rows={2} className="w-full bg-slate-50 border-2 rounded-xl p-3 text-sm outline-none resize-none"></textarea>
+                    <div>
+                        <label htmlFor="matricula-input" className="text-xs text-slate-600 font-bold mb-1 block">Sua Matrícula *</label>
+                        <input id="matricula-input" type="text" placeholder="Sua Matrícula" value={baixaForm.matricula} onChange={e => setBaixaForm({...baixaForm, matricula: e.target.value})} className="w-full border-2 rounded-xl p-3 text-sm outline-none" required aria-required="true" />
+                    </div>
+                    <div>
+                        <label htmlFor="obs-textarea" className="text-xs text-slate-600 font-bold mb-1 block">Observação (opcional)</label>
+                        <textarea id="obs-textarea" placeholder="Observação (opcional)" value={baixaForm.obs} onChange={e => setBaixaForm({...baixaForm, obs: e.target.value})} rows={2} className="w-full bg-slate-50 border-2 rounded-xl p-3 text-sm outline-none resize-none"></textarea>
+                    </div>
                 </div>
                 <div className="flex gap-3 mt-6">
                     <button onClick={() => { setShowBaixa(false); setSelectedProduct(null); }} className="flex-1 bg-slate-100 py-3 rounded-xl font-bold">Sair</button>

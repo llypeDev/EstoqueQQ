@@ -6,12 +6,13 @@ const LS_MOVEMENTS = 'stock_movements';
 const LS_ORDERS = 'stock_orders';
 
 // --- CONFIGURAÇÃO BANCO DE ESTOQUE ---
-const INV_URL = 'https://fnhapvoxgqkzokravccd.supabase.co';
-const INV_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZuaGFwdm94Z3Frem9rcmF2Y2NkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUyMjU5ODksImV4cCI6MjA4MDgwMTk4OX0.xmZ4F4Zwc4azBr5niczcD9ct37CnTsPb1IFCTKhZ-Bw';
+// Usa variáveis de ambiente ou fallback para desenvolvimento
+const INV_URL = import.meta.env.VITE_SUPABASE_INV_URL || 'https://fnhapvoxgqkzokravccd.supabase.co';
+const INV_KEY = import.meta.env.VITE_SUPABASE_INV_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZuaGFwdm94Z3Frem9rcmF2Y2NkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUyMjU5ODksImV4cCI6MjA4MDgwMTk4OX0.xmZ4F4Zwc4azBr5niczcD9ct37CnTsPb1IFCTKhZ-Bw';
 
 // --- CONFIGURAÇÃO BANCO DE PEDIDOS ---
-const ORD_URL = 'https://cqsnjllremfqrvebqrgo.supabase.co';
-const ORD_KEY = 'sb_publishable_d0nr0JLUeaoooxrJxq21OA_C6DMWh8s';
+const ORD_URL = import.meta.env.VITE_SUPABASE_ORD_URL || 'https://cqsnjllremfqrvebqrgo.supabase.co';
+const ORD_KEY = import.meta.env.VITE_SUPABASE_ORD_KEY || 'sb_publishable_d0nr0JLUeaoooxrJxq21OA_C6DMWh8s';
 
 let supabaseInventory: SupabaseClient;
 let supabaseOrders: SupabaseClient;
@@ -92,7 +93,15 @@ export const fetchMovements = async (): Promise<Movement[]> => {
     
     if (error) throw error;
     
-    const formatted: Movement[] = data.map((m: any) => ({
+    const formatted: Movement[] = data.map((m: {
+      id: number;
+      created_at: string;
+      prod_id: string | null;
+      prod_name: string;
+      qty: number;
+      obs?: string | null;
+      matricula?: string | null;
+    }) => ({
         id: m.id,
         date: m.created_at,
         prodId: m.prod_id,
@@ -154,25 +163,25 @@ export const fetchOrders = async (): Promise<Order[]> => {
     const productMap = new Map<string, string>();
     productsList.forEach(p => { if(p.id) productMap.set(String(p.id).trim(), p.name); });
 
-    const formatted: Order[] = data.map((o: any) => {
+        const formatted: Order[] = data.map((o: any) => {
         const localOrder = localMap.get(o.id);
-        const items: OrderItem[] = (o.order_items || []).map((item: any) => {
+        const items: OrderItem[] = (o.order_items || []).map((item) => {
             const rawSku = item.sku ?? item.product_id ?? item.id;
             const sku = rawSku ? String(rawSku).trim() : 'N/A';
             const catalogName = productMap.get(sku);
             const pName = catalogName || item.product_name || `Produto SKU: ${sku}`;
             
-            // Tenta pegar qtyPicked do cache local temporariamente, ou 0
-            // Idealmente isso deveria vir do banco se você implementar persistência de picking no banco
-            // Como "order_items" não tem picked no seu schema original aparente, mantemos a lógica visual
-            // Mas cuidado: se não salvar picked no banco, ao recarregar perde o progresso
+            // Tenta pegar qtyPicked do banco primeiro, depois do cache local
+            const qtyPickedFromDB = item.qty_picked ?? item.qtyPicked ?? 0;
             const localItem = localOrder?.items.find((li: OrderItem) => String(li.productId).trim() === sku);
+            // Prioriza valor do banco, mas usa cache local se o banco não tiver
+            const qtyPicked = qtyPickedFromDB > 0 ? qtyPickedFromDB : (localItem ? localItem.qtyPicked : 0);
             
             return {
                 productId: sku,
                 productName: pName,
                 qtyRequested: item.quantity || 0,
-                qtyPicked: localItem ? localItem.qtyPicked : 0 
+                qtyPicked: qtyPicked
             };
         });
         
@@ -237,6 +246,7 @@ export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => 
               product_id: item.productId,
               product_name: item.productName,
               quantity: item.qtyRequested,
+              qty_picked: item.qtyPicked || 0,
               sku: item.productId
           }));
           const { error: itemsError } = await supabaseOrders.from('order_items').insert(itemsPayload);
@@ -249,6 +259,25 @@ export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => 
             card_last_digits: order.cardLast4,
             whatsapp: order.whatsapp
         }).eq('id', order.id));
+      if (error) throw error;
+      
+      // Atualiza os itens do pedido, incluindo qtyPicked
+      if (order.items.length > 0) {
+          // Primeiro, apaga os itens existentes
+          await supabaseOrders.from('order_items').delete().eq('order_id', order.id);
+          
+          // Depois, insere os itens atualizados
+          const itemsPayload = order.items.map(item => ({
+              order_id: order.id,
+              product_id: item.productId,
+              product_name: item.productName,
+              quantity: item.qtyRequested,
+              qty_picked: item.qtyPicked || 0,
+              sku: item.productId
+          }));
+          const { error: itemsError } = await supabaseOrders.from('order_items').insert(itemsPayload);
+          if (itemsError) throw itemsError;
+      }
     }
     
     if (error) throw error;

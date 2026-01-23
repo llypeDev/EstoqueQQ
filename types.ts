@@ -55,7 +55,7 @@ export interface SyncItem {
   id: string | number;
   type: 'PRODUCT' | 'MOVEMENT' | 'ORDER' | 'DELETE_ORDER';
   action: 'SAVE' | 'DELETE';
-  payload: any;
+  payload: Product | Movement | Order | { id: string };
   isNew?: boolean; // Para produtos e pedidos
   timestamp: number;
 }
