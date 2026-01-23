@@ -163,7 +163,7 @@ export const fetchOrders = async (): Promise<Order[]> => {
     const productMap = new Map<string, string>();
     productsList.forEach(p => { if(p.id) productMap.set(String(p.id).trim(), p.name); });
 
-        const formatted: Order[] = data.map((o: any) => {
+    const formatted: Order[] = data.map((o: any) => {
         const localOrder = localMap.get(o.id);
         const items: OrderItem[] = (o.order_items || []).map((item) => {
             const rawSku = item.sku ?? item.product_id ?? item.id;
@@ -198,6 +198,7 @@ export const fetchOrders = async (): Promise<Order[]> => {
             id: o.id,
             orderNumber: o.ticket_number ? o.ticket_number.toString() : (o.order_number || 'SEM-NUM'),
             customerName: o.full_name || o.customer_name || 'Cliente Site',
+            email: o.email || '', // ✅ CAMPO EMAIL ADICIONADO
             filial: o.segmento || o.filial || '',
             matricula: o.matricula || '',
             date: o.created_at || new Date().toISOString(),
@@ -227,10 +228,17 @@ export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => 
     if (!supabaseOrders) {
         throw new Error('Conexão com banco de pedidos não inicializada');
     }
+    
+    // ✅ VALIDAÇÃO: Garante que email não seja null/undefined
+    if (!order.email || order.email.trim() === '') {
+        throw new Error('Email é obrigatório para salvar o pedido');
+    }
+    
     let error;
     const orderPayload = {
         ticket_number: parseInt(order.orderNumber) || 0,
         full_name: order.customerName,
+        email: order.email, // ✅ CAMPO EMAIL ADICIONADO
         matricula: order.matricula || '',
         segmento: order.filial || '', 
         status: order.status,
@@ -261,6 +269,7 @@ export const saveOrder = async (order: Order, isNew: boolean): Promise<void> => 
       ({ error } = await supabaseOrders.from('orders').update({ 
             ticket_number: parseInt(order.orderNumber) || 0,
             full_name: order.customerName,
+            email: order.email, // ✅ CAMPO EMAIL ADICIONADO
             matricula: order.matricula || '',
             segmento: order.filial || '',
             status: order.status,
